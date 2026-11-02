@@ -44,7 +44,12 @@ def workspaces():
 def pane_state(st, pane, cmd, dead):
     if dead == "1" or cmd in ("zsh", "bash", "sh", "fish", "-zsh", "login", ""):
         return "none"
-    return (st.get(pane) or {}).get("state", "idle")
+    d = st.get(pane) or {}
+    state = d.get("state", "idle")
+    # "working" sin ningún evento del hook en 5 min: probablemente trabado
+    if state == "working" and d.get("tool") != "confianza" and time.time() - d.get("ts", time.time()) > 300:
+        return "stale"
+    return state
 
 
 def items():
@@ -103,15 +108,19 @@ def ui(scr):
     for k, v in {1: 222, 2: 210, 3: 244, 4: 218, 5: 147}.items():
         curses.init_pair(k, v, -1)
     WORK, WAIT, MUTED, ROSE, IRIS = (curses.color_pair(i) for i in range(1, 6))
-    scr.timeout(1000)
+    scr.timeout(250)          # 4 cuadros por segundo para el spinner; los datos, cada 1 s
     rowmap = {}
+    tick, cache, cache_t = 0, [], 0
     while True:
+        tick += 1
+        if time.time() - cache_t > 1:
+            cache, cache_t = items(), time.time()
         H, W = scr.getmaxyx()
         scr.erase()
         cur = current()
         rowmap.clear()
         y, n_ws, n_ag, sep = 1, 0, 0, False
-        for kind, label, target, state in items():
+        for kind, label, target, state in cache:
             if kind == "ag" and not sep:
                 if y < H - 1:
                     scr.addnstr(y, 1, "─" * max(1, W - 2), W - 2, MUTED)
@@ -123,8 +132,12 @@ def ui(scr):
                 n_ws += 1; num = n_ws
             else:
                 n_ag += 1; num = n_ag
-            if state in ("working", "background"):
-                dot, col = "●", WORK
+            if state == "working":
+                dot, col = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"[tick % 10], WORK
+            elif state == "background":
+                dot, col = "◐◓◑◒"[(tick // 2) % 4], WORK
+            elif state == "stale":
+                dot, col = "!", WAIT
             elif state == "waiting":
                 dot, col = "●", WAIT
             elif state == "none":

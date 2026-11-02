@@ -151,6 +151,23 @@ def card_status(W, cwd, live):
     return card("Status", [fit(r, n) for r in rows], W, right=right)
 
 
+SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"      # trabajando: gira mientras el agente vive
+HALF = "◐◓◑◒"              # en segundo plano: gira más lento
+STALE = 300                # "working" sin ningún evento del hook en 5 min: ¿trabado?
+TICK = [0]
+_memo = {}
+
+
+def memo(key, ttl, fn):
+    """Lo caro (git, gh, usage) se recalcula cada `ttl` s; el spinner se dibuja 4 veces por segundo."""
+    v = _memo.get(key)
+    if v and time.time() - v[0] < ttl:
+        return v[1]
+    out = fn()
+    _memo[key] = (time.time(), out)
+    return out
+
+
 def card_agents(W, live, ended):
     if not live and not ended:
         return card("Agents", [f"{MUTED}nadie trabajando · {PETAL}alt+k{MUTED} para lanzar{RST}"], W, glyph="∗")
@@ -163,6 +180,14 @@ def card_agents(W, live, ended):
             g, txt, col = "●", "confiá carpeta", RED
         if s.get("state") == "background" and s.get("background"):
             txt = f"{s['background']} en 2º plano"
+        idle = time.time() - s.get("ts", time.time())
+        if s.get("state") == "working" and s.get("tool") != "confianza":
+            if idle > STALE:
+                g, col, txt = "⚠", AMBER, f"¿trabado? {int(idle // 60)}m quieto"
+            else:
+                g = SPIN[TICK[0] % len(SPIN)]
+        elif s.get("state") == "background":
+            g = HALF[(TICK[0] // 2) % len(HALF)]
         left = f"{col}{g}{RST} {TEXT}{BOLD}{a['win']}{RST} {MUTED}{s.get('role') or ''}{RST}"
         right = f"{PETAL}{model(s.get('model'))}{RST}  {col}{txt}{RST}  {MUTED}{ago(s.get('ts', 0)):>5}{RST}"
         rows.append(lr(left, right, inner_w))
@@ -271,19 +296,21 @@ def frame(W, H, cwd):
     by_pane, all_ = states()
     live, ended = agents(by_pane)
     out = []
-    out += card_status(W, cwd, live)
+    out += memo(("status", W), 2, lambda: card_status(W, cwd, live))
     out += card_agents(W, live, ended)
-    out += card_checkpoints(W, all_)
-    radio = line_radio(W)
+    out += memo(("ckpt", W), 2, lambda: card_checkpoints(W, all_))
+    radio = memo(("radio", W), 5, lambda: line_radio(W))
     room = H - len(out) - len(radio) - 2
-    roots = [cwd] + [a["s"].get("cwd") for a in live if a["s"].get("cwd")]
-    seen, uniq = set(), []
-    for r in roots:
-        top = sh("git", "-C", r, "rev-parse", "--show-toplevel").strip() if r else ""
-        if top and top not in seen:
-            seen.add(top); uniq.append(top)
+    def changes():
+        roots = [cwd] + [a["s"].get("cwd") for a in live if a["s"].get("cwd")]
+        seen, uniq = set(), []
+        for r in roots:
+            top = sh("git", "-C", r, "rev-parse", "--show-toplevel").strip() if r else ""
+            if top and top not in seen:
+                seen.add(top); uniq.append(top)
+        return card_changes(W, uniq, room - 2)
     if room >= 3:
-        out += card_changes(W, uniq, room - 2)
+        out += memo(("changes", W, room), 2, changes)
     out += [""] * max(0, H - len(out) - len(radio) - 1)
     out += radio
     out.append(fit(f"{PETAL}alt+a{RST} {MUTED}agentes{RST}  {PETAL}alt+g{RST} {MUTED}cambios{RST}  "
@@ -304,7 +331,8 @@ def main():
             lines = (frame(W, H, cwd) + [""] * H)[:H]
             sys.stdout.write("\033[H" + "\033[K\n".join(cut(l, W) for l in lines) + "\033[K")
             sys.stdout.flush()
-            time.sleep(2)
+            TICK[0] += 1
+            time.sleep(0.25)
     except KeyboardInterrupt:
         pass
     finally:
