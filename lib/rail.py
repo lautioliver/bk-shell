@@ -343,10 +343,16 @@ def _pixels(rows):
     return out
 
 
-def mascot(W, live):
-    """Barrilete según lo que hacen los agentes: vuela, espera o duerme. Anima con TICK."""
+def alive_states(all_states):
+    """Estado de cada sesión de Claude que sigue viva en tmux: el chat de este workspace (yo incluido)
+    y los agentes de cualquier proyecto. Las que quedaron de ventanas cerradas no cuentan."""
+    panes = set(sh("tmux", "list-panes", "-a", "-F", "#{pane_id}").split())
+    return [s.get("state") for s in all_states if s.get("pane") in panes]
+
+
+def mascot(W, states):
+    """Barrilete según lo que hacen las sesiones: vuela, espera o duerme. Anima con TICK."""
     t = TICK[0]
-    states = [a["s"].get("state") for a in live]
     if "waiting" in states:
         mood, note = "wait", "te espera algo"
     elif "working" in states:
@@ -371,10 +377,8 @@ def mascot(W, live):
         # Dormido: párpados, una rayita de 2 píxeles por ojo en la mitad de abajo
         rows[6] = "....BVLLVVLLVB...."
     art = _pixels(rows)
-    sway = "╰─╮" if (t // 6) % 2 else "╭─╯"   # la correa se mueve
     zz = ["  z", " z ", "z  "][(t // 6) % 3] if mood == "sleep" else "   "
     art[0] = art[0] + f"{MUTED}{zz}{RST}"
-    art.append(" " * 8 + f"{RIENDA}{sway}{RST}")
     bob = (t // 4) % 2 if mood in ("fly", "slow") else 0  # sube y baja
     pad = " " * max(0, (W - 18) // 2)
     lines = [""] * bob + [pad + l for l in art] + [""] * (1 - bob)
@@ -392,7 +396,7 @@ def frame(W, H, cwd):
     out += memo(("ckpt", W), 2, lambda: card_checkpoints(W, all_))
     radio = memo(("radio", W), 5, lambda: line_radio(W))
     room = H - len(out) - len(radio) - 2
-    # Lugar para Barrilete (9 filas): Changes puede usar el resto si le quedan al menos 4
+    # Lugar para Barrilete (8 filas): Changes puede usar el resto si le quedan al menos 4
     if room - 9 >= 4:
         room -= 9
     def changes():
@@ -406,7 +410,7 @@ def frame(W, H, cwd):
     if room >= 3:
         out += memo(("changes", W, room), 2, changes)
     # Barrilete abajo, si queda lugar (necesita 8 filas)
-    pet = mascot(W, live) if H - len(out) - len(radio) - 1 >= 9 else []
+    pet = mascot(W, memo(("alive",), 1, lambda: alive_states(all_))) if H - len(out) - len(radio) - 1 >= 9 else []
     out += [""] * max(0, H - len(out) - len(pet) - len(radio) - 1)
     out += pet
     out += radio
