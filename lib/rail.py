@@ -298,38 +298,81 @@ BLUE = G.fg("8FB0FF")       # ojos, como en el logo
 RIENDA = G.fg("B4122B")     # la rienda roja
 
 
+# Pixel art con medios bloques (▀ = píxel de arriba con fg, de abajo con bg), copiado del logo:
+# hélices, cuerpo claro, visor oscuro con ojos azules y la rienda roja.
+PET_COL = {"P": "C9CED8", "S": "C9CED8", "B": "E9ECF1", "V": "14161A", "E": "8FB0FF", "R": "B4122B", "X": "F07178"}
+PET_BODY = [
+    "...S..........S...",
+    "...S.BBBBBBBB.S...",
+    "....BBBBBBBBBB....",
+    "....BVVVVVVVVB....",
+    "....BVV{a}VV{a}VVB....",
+    "....BVV{b}VV{b}VVB....",
+    "....BVVVVVVVVB....",
+    "....BBBBBBBBBB....",
+    ".....BBBBBBBB.....",
+    "........RR........",
+    "..................",
+]
+
+
+def _props(w):
+    row = ["."] * 18
+    for c in (3, 14):
+        for x in range(c - w // 2, c + w // 2 + 1):
+            row[x] = "P"
+    return "".join(row)
+
+
+def _pixels(rows):
+    out = []
+    for y in range(0, len(rows), 2):
+        top, bot = rows[y], rows[y + 1]
+        line = ""
+        for a, b in zip(top, bot):
+            if a == "." and b == ".":
+                line += RST + " "
+            elif a == ".":
+                line += RST + G.fg(PET_COL[b]) + "▄"
+            elif b == ".":
+                line += RST + G.fg(PET_COL[a]) + "▀"
+            else:
+                line += G.fg(PET_COL[a]) + G.bg(PET_COL[b]) + "▀"
+        out.append(line + RST)
+    return out
+
+
 def mascot(W, live):
     """Barrilete según lo que hacen los agentes: vuela, espera o duerme. Anima con TICK."""
     t = TICK[0]
     states = [a["s"].get("state") for a in live]
     if "waiting" in states:
-        mood, eyes, eye_c, note = "wait", "! !", RED, "te espera algo"
+        mood, note = "wait", "te espera algo"
     elif "working" in states:
-        mood, eyes, eye_c, note = "fly", "● ●" if t % 24 else "─ ─", BLUE, "volando"
+        mood, note = "fly", "volando"
     elif "background" in states:
-        mood, eyes, eye_c, note = "slow", "● ●" if t % 40 else "─ ─", BLUE, "en segundo plano"
+        mood, note = "slow", "en segundo plano"
     else:
-        mood, eyes, eye_c, note = "sleep", "– –", MUTED, "durmiendo"
-    # Hélices: rápidas trabajando, lentas en 2º plano, quietas durmiendo
-    blades = ["━━━━", "────", "╍╍╍╍", "────"]
-    if mood in ("fly", "wait"):
-        prop = blades[t % 4]
-    elif mood == "slow":
-        prop = blades[(t // 3) % 4]
+        mood, note = "sleep", "durmiendo"
+    # Hélices: al girar se ven más cortas (7 → 5 → 1 → 5 píxeles)
+    spin = [7, 5, 1, 5]
+    w = spin[t % 4] if mood in ("fly", "wait") else spin[(t // 3) % 4] if mood == "slow" else 7
+    if mood == "sleep":
+        a, b = "V", "E"                       # ojos cerrados: solo la mitad de abajo
+    elif mood == "wait":
+        a = b = "X"                           # ojos rojos
+    elif t % 24 == 0:
+        a = b = "V"                           # parpadeo
     else:
-        prop = "────"
-    bob = (t // 4) % 2 if mood in ("fly", "slow") else 0      # sube y baja
-    sway = " ╰─╮" if (t // 6) % 2 else "╭─╯ "                  # la rienda se mueve
+        a = b = "E"
+    rows = [_props(w)] + [r.replace("{a}", a).replace("{b}", b) for r in PET_BODY]
+    art = _pixels(rows)
+    sway = "╰─╮" if (t // 6) % 2 else "╭─╯"   # la correa se mueve
     zz = ["  z", " z ", "z  "][(t // 6) % 3] if mood == "sleep" else "   "
-    art = [
-        f"{TEXT}{prop}{RST}       {TEXT}{prop}{RST}  {MUTED}{zz}{RST}",
-        f"  {TEXT}┃{RST} {TEXT}╭─────╮{RST} {TEXT}┃{RST}",
-        f"    {TEXT}│{RST} {eye_c}{eyes}{RST} {TEXT}│{RST}",
-        f"    {TEXT}╰──{RIENDA}▄{TEXT}──╯{RST}",
-        f"       {RIENDA}{sway}{RST}",
-    ]
-    width = 19
-    pad = " " * max(0, (W - width) // 2)
+    art[0] = art[0] + f"{MUTED}{zz}{RST}"
+    art.append(" " * 8 + f"{RIENDA}{sway}{RST}")
+    bob = (t // 4) % 2 if mood in ("fly", "slow") else 0  # sube y baja
+    pad = " " * max(0, (W - 18) // 2)
     lines = [""] * bob + [pad + l for l in art] + [""] * (1 - bob)
     label = f"{MUTED}✿ barrilete · {note}{RST}"
     lines.append(" " * max(0, (W - vlen(label)) // 2) + label)
@@ -345,9 +388,9 @@ def frame(W, H, cwd):
     out += memo(("ckpt", W), 2, lambda: card_checkpoints(W, all_))
     radio = memo(("radio", W), 5, lambda: line_radio(W))
     room = H - len(out) - len(radio) - 2
-    # Lugar para Barrilete (7 filas): Changes puede usar el resto si le quedan al menos 4
-    if room - 7 >= 4:
-        room -= 7
+    # Lugar para Barrilete (9 filas): Changes puede usar el resto si le quedan al menos 4
+    if room - 9 >= 4:
+        room -= 9
     def changes():
         roots = [cwd] + [a["s"].get("cwd") for a in live if a["s"].get("cwd")]
         seen, uniq = set(), []
@@ -359,7 +402,7 @@ def frame(W, H, cwd):
     if room >= 3:
         out += memo(("changes", W, room), 2, changes)
     # Barrilete abajo, si queda lugar (necesita 8 filas)
-    pet = mascot(W, live) if H - len(out) - len(radio) - 1 >= 7 else []
+    pet = mascot(W, live) if H - len(out) - len(radio) - 1 >= 9 else []
     out += [""] * max(0, H - len(out) - len(pet) - len(radio) - 1)
     out += pet
     out += radio
