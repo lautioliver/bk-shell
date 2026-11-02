@@ -24,8 +24,10 @@ warn() { printf '\033[33m! %s\033[0m\n' "$*"; }
 die() { printf '\033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 # Con `curl | bash` el stdin es el script: las preguntas se leen de la terminal
 ask() {
-  local a=""
-  if [ -r /dev/tty ]; then read -r -p "$1 [S/n] " a </dev/tty || true; else a="${BK_YES:-n}"; fi
+  local a
+  # Sin terminal (CI, pipe sin tty): no tocar nada salvo que BK_YES=s
+  if ! { exec 3</dev/tty; } 2>/dev/null; then a="${BK_YES:-n}"
+  else read -r -p "$1 [S/n] " a <&3 || a=n; exec 3<&-; fi
   case "$a" in ""|s|S|si|sí|y|Y|yes) return 0 ;; *) return 1 ;; esac
 }
 
@@ -34,7 +36,7 @@ tmux_conf() { [ -f "$HOME/.config/tmux/tmux.conf" ] && echo "$HOME/.config/tmux/
 uninstall() {
   rm -f "$BIN/bk"
   local tc; tc=$(tmux_conf)
-  [ -f "$tc" ] && sed -i.bk-bak '/bk-shell\/tmux\/bk.conf/d' "$tc" && say "saqué bk.conf de $tc"
+  [ -f "$tc" ] && sed -i.bk-bak -e '/^# bk shell$/d' -e '/bk-shell\/tmux\/bk.conf/d' "$tc" && say "saqué bk.conf de $tc"
   if [ -f "$SETTINGS" ]; then
     python3 - "$SETTINGS" "$HOOK" <<'PY'
 import json, sys
