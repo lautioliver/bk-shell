@@ -22,8 +22,10 @@ IFS=$'\t' read -r SID EVENT CWD TOOL NTYPE PCMD PARG PLANNER TRANSCRIPT < <(
     def nz: if . == null or . == "" then "-" else tostring end;
     ((.prompt // "") | [capture("^\\s*/(?:[\\w-]+:)?(?<c>[a-z-]+)(?:\\s+#?(?<n>[0-9]+))?")] | .[0] // {}) as $p
     | (if .tool_name == "Bash" and .hook_event_name == "PostToolUse"
-         and ((.tool_input.command // "") | test("planner\\.py"))
-       then (if (.tool_input.command | test("--draft")) then "draft" else "create" end)
+         # Solo si el comando CORRE planner.py (al principio o después de &&, ;, |), no si lo nombra
+         # en un texto, un grep o un heredoc: eso dejaba sesiones como "plan esperando tu sí" sin plan.
+         and ((.tool_input.command // "") | test("(^|&&|;|\\|)\\s*(python3?\\s+)?[^\\s'\"]*planner\\.py(\\s|$)"))
+       then (if (.tool_input.command | test("planner\\.py[^|;&\\n]*\\s--draft(\\s|$)")) then "draft" else "create" end)
        else "-" end) as $planner
     | [ (.session_id|nz), (.hook_event_name|nz), (.cwd|nz), (.tool_name|nz),
         (.notification_type|nz), ($p.c|nz), ($p.n|nz), $planner, (.transcript_path|nz) ] | @tsv' 2>/dev/null
