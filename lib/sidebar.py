@@ -81,6 +81,11 @@ def go(target):
     pane = os.environ.get("TMUX_PANE", "")
     client = sh("tmux", "display-message", "-p", "-t", pane, "#{client_name}").strip()
     c = ["-c", client] if client else []
+    if target == "__new__":
+        sess = sh("tmux", "display-message", "-p", "-t", pane, "#{session_name}").strip()
+        subprocess.Popen(["tmux", "display-popup"] + c + ["-w", "70%", "-h", "60%", "-E",
+                          f"BK_CLIENT='{client}' BK_FROM='{sess}' bk new"])
+        return
     if target.startswith(AGENTS + ":"):
         # El agente se ve encima, en un popup de solo lectura (bk watch): q/esc lo cierra, enter va a
         # su ventana para escribirle. Antes era un tmux dentro del popup y las teclas no le llegaban.
@@ -132,6 +137,10 @@ def ui(scr):
             scr.addnstr(y, 3, dot, 1, col)
             rowmap[y] = target
             y += 1
+        # "+" al pie: Nuevo (chat o workspace), igual que alt+n
+        if H - 2 > y:
+            scr.addnstr(H - 2, 1, " + ", W - 1, ROSE | curses.A_BOLD)
+            rowmap[H - 2] = "__new__"
         scr.refresh()
         k = scr.getch()
         if k == curses.KEY_MOUSE:

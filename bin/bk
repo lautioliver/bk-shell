@@ -19,6 +19,8 @@ uso: bk [comando] [--dry-run]
   (sin comando)     el workspace del proyecto de esta carpeta: chat + riel (sesión tmux "bk-<proyecto>";
                     si ya existe, vuelve a ella). Uno por proyecto, cada uno en su escritorio
   rerun [--go] [pr…]  volver a correr los checks de Actions que fallaron (sin --go: solo muestra)
+  new | n           popup "Nuevo": chat nuevo en este proyecto u otro workspace (alt+n, o + en la tira)
+  chat              un claude nuevo en el proyecto del workspace, en el lugar del chat (alt+q vuelve)
   open [proyecto]   abrir el workspace de otro proyecto en una ventana nueva (sin argumento: los abiertos)
   plan "<idea>"     planner: /plan-feature en la raíz del proyecto
   run <issue>       routing.py elige el rol → prepare.sh crea worktree → implementer en tmux
@@ -323,7 +325,7 @@ workspace() {
     tmux set-hook -t "$WS_SESSION" client-attached "run-shell -b 'bk _layout #{session_name}'"
     tmux set-hook -t "$WS_SESSION" client-resized "run-shell -b 'bk _layout #{session_name}'"
   fi
-  if [ -n "${TMUX:-}" ]; then tmux switch-client -t "$WS_SESSION"; else exec tmux attach -t "$WS_SESSION"; fi
+  if [ -n "${TMUX:-}" ]; then tmux switch-client ${BK_CLIENT:+-c "$BK_CLIENT"} -t "$WS_SESSION"; else exec tmux attach -t "$WS_SESSION"; fi
 }
 
 # bk open <proyecto|ruta>: ventana nueva de Ghostty con el workspace de ese proyecto, en el
@@ -382,7 +384,9 @@ ws_agent() {
   fi
   [ "$n" = 0 ] && { tmux select-pane -t "${chat:-$w}" 2>/dev/null; return; }
   # El N-ésimo agente, en el mismo orden que la tira (ventanas de "agents", sin chats de workspaces)
+  if [[ "$n" == %* ]]; then target="$n"; else
   target=$(tmux list-panes -s -t "$SESSION" -F '#{pane_id} #{@bk_ws}' 2>/dev/null | awk '$2 == "" {print $1}' | sed -n "${n}p")
+  fi
   [ -n "$target" ] || { tmux display-message "no hay agente $n"; return; }
   chat=$(tmux list-panes -t "$w" -F '#{pane_id} #{pane_start_command}' | grep -v -e 'bk rail' -e 'bk sidebar' | head -1 | cut -d' ' -f1)
   [ -n "$chat" ] || return
@@ -403,6 +407,25 @@ new_window() {
     die "abrí una terminal nueva y corré: $1"
   fi
 }
+
+# bk chat [sesión]: un claude nuevo en la carpeta del proyecto del workspace. Vive en la sesión
+# "agents" (aparece en la tira) y se trae al lugar del chat; alt+q vuelve al orquestador.
+cmd_chat() {
+  set +euo pipefail
+  local s="${1:-$(tmux display-message -p '#{session_name}' 2>/dev/null)}" top name n pane
+  top=$(tmux show-environment -t "$s" BK_PROJECT 2>/dev/null | sed -n 's/^BK_PROJECT=//p')
+  top="${top:-$PWD}"; name="c-$(basename "$top" | cut -c1-10)"
+  n=1; while has_window "$name$([ $n -gt 1 ] && echo "-$n")"; do n=$((n + 1)); done
+  [ $n -gt 1 ] && name="$name-$n"
+  if tmux has-session -t "$SESSION" 2>/dev/null; then
+    pane=$(tmux new-window -d -P -F '#{pane_id}' -t "$SESSION:" -n "$name" -c "$top" "claude")
+  else
+    pane=$(tmux new-session -d -P -F '#{pane_id}' -s "$SESSION" -n "$name" -c "$top" "claude")
+  fi
+  tmux set-option -w -t "$SESSION:$name" remain-on-exit on >/dev/null
+  case "$s" in bk*) ws_agent "$s" "$pane" ;; *) info "chat nuevo: $name (bk go $name)" ;; esac
+}
+
 
 # bk _prs: PRs tuyos listos para mergear y reviews que te pidieron, para la tarjeta Checkpoints del riel
 # (la escribe en ~/.cache/bk/checkpoints_prs.json; el riel la llama cada ~2 min en segundo plano)
@@ -452,7 +475,7 @@ cmd_open() {
   sess=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -x "bk-$q" \
          || tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^bk-' | grep -i -- "$q")
   if [ -n "$sess" ] && [ "$(wc -l <<<"$sess")" -eq 1 ]; then
-    if [ -n "${TMUX:-}" ]; then tmux switch-client -t "$sess"; else
+    if [ -n "${TMUX:-}" ]; then tmux switch-client ${BK_CLIENT:+-c "$BK_CLIENT"} -t "$sess"; else
       new_window "tmux attach -t $sess"; fi
     info "→ $sess"; return
   fi
@@ -680,6 +703,8 @@ case "${1:-}" in
   palette|k)   exec python3 "$WS/lib/palette.py" ;;
   _layout)     ws_layout "${2:-}" ;;
   _agent)      ws_agent "${2:-}" "${3:-0}" ;;
+  chat)        shift; cmd_chat "$@" ;;
+  new|n)       exec python3 "$WS/lib/new.py" ;;
   _footer)     ws_footer "${2:-}" ;;
   _model)      ws_model "${2:-}" ;;
   _style)      WS_SESSION="${2:?}"; ws_style ;;

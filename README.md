@@ -28,6 +28,7 @@ quedó sin commitear, en una sola sesión de tmux.
 - **Agentes de Barrilete Kit en paralelo**: `bk run <issue>`, `bk review <pr>`, `bk fix <pr> "…"`, `bk plan "…"`,
   cada uno en su ventana y su worktree, con el modelo que diga `roles.yml`.
 - **Hablarles sin entrar**: `bk say <agente> "…"`, `bk peek <agente>`, o `alt+shift+N` para traer el agente N al lugar del chat.
+- **Nuevo sin salir**: `alt+n` (o el `+` de la tira) abre un chat nuevo en el proyecto o el workspace de otro proyecto.
 - **Overlays**: `alt+a` agentes en vivo · `alt+g` cambios (worktrees y diff) · `alt+k` comandos · `alt+s` sesiones
   de Claude (abiertas y recientes, retomables) · `alt+u` estadísticas · `alt+,` estilo.
 - **Estado real de cada agente**: trabajando, te espera (permiso, confianza en la carpeta, plan por aprobar),
