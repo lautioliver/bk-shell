@@ -292,6 +292,50 @@ def line_radio(W):
     return [cut(f" {ROSE}{icon}{RST} {TEXT}{station}{RST} {MUTED}{title}{RST}", W)]
 
 
+
+# ---------- Barrilete: el dron con la rienda, la mascota del kit ----------
+BLUE = G.fg("8FB0FF")       # ojos, como en el logo
+RIENDA = G.fg("B4122B")     # la rienda roja
+
+
+def mascot(W, live):
+    """Barrilete según lo que hacen los agentes: vuela, espera o duerme. Anima con TICK."""
+    t = TICK[0]
+    states = [a["s"].get("state") for a in live]
+    if "waiting" in states:
+        mood, eyes, eye_c, note = "wait", "! !", RED, "te espera algo"
+    elif "working" in states:
+        mood, eyes, eye_c, note = "fly", "● ●" if t % 24 else "─ ─", BLUE, "volando"
+    elif "background" in states:
+        mood, eyes, eye_c, note = "slow", "● ●" if t % 40 else "─ ─", BLUE, "en segundo plano"
+    else:
+        mood, eyes, eye_c, note = "sleep", "– –", MUTED, "durmiendo"
+    # Hélices: rápidas trabajando, lentas en 2º plano, quietas durmiendo
+    blades = ["━━━━", "────", "╍╍╍╍", "────"]
+    if mood in ("fly", "wait"):
+        prop = blades[t % 4]
+    elif mood == "slow":
+        prop = blades[(t // 3) % 4]
+    else:
+        prop = "────"
+    bob = (t // 4) % 2 if mood in ("fly", "slow") else 0      # sube y baja
+    sway = " ╰─╮" if (t // 6) % 2 else "╭─╯ "                  # la rienda se mueve
+    zz = ["  z", " z ", "z  "][(t // 6) % 3] if mood == "sleep" else "   "
+    art = [
+        f"{TEXT}{prop}{RST}       {TEXT}{prop}{RST}  {MUTED}{zz}{RST}",
+        f"  {TEXT}┃{RST} {TEXT}╭─────╮{RST} {TEXT}┃{RST}",
+        f"    {TEXT}│{RST} {eye_c}{eyes}{RST} {TEXT}│{RST}",
+        f"    {TEXT}╰──{RIENDA}▄{TEXT}──╯{RST}",
+        f"       {RIENDA}{sway}{RST}",
+    ]
+    width = 19
+    pad = " " * max(0, (W - width) // 2)
+    lines = [""] * bob + [pad + l for l in art] + [""] * (1 - bob)
+    label = f"{MUTED}✿ barrilete · {note}{RST}"
+    lines.append(" " * max(0, (W - vlen(label)) // 2) + label)
+    return lines
+
+
 def frame(W, H, cwd):
     by_pane, all_ = states()
     live, ended = agents(by_pane)
@@ -301,6 +345,9 @@ def frame(W, H, cwd):
     out += memo(("ckpt", W), 2, lambda: card_checkpoints(W, all_))
     radio = memo(("radio", W), 5, lambda: line_radio(W))
     room = H - len(out) - len(radio) - 2
+    # Lugar para Barrilete (7 filas): Changes puede usar el resto si le quedan al menos 4
+    if room - 7 >= 4:
+        room -= 7
     def changes():
         roots = [cwd] + [a["s"].get("cwd") for a in live if a["s"].get("cwd")]
         seen, uniq = set(), []
@@ -311,7 +358,10 @@ def frame(W, H, cwd):
         return card_changes(W, uniq, room - 2)
     if room >= 3:
         out += memo(("changes", W, room), 2, changes)
-    out += [""] * max(0, H - len(out) - len(radio) - 1)
+    # Barrilete abajo, si queda lugar (necesita 8 filas)
+    pet = mascot(W, live) if H - len(out) - len(radio) - 1 >= 7 else []
+    out += [""] * max(0, H - len(out) - len(pet) - len(radio) - 1)
+    out += pet
     out += radio
     out.append(fit(f"{PETAL}alt+a{RST} {MUTED}agentes{RST}  {PETAL}alt+g{RST} {MUTED}cambios{RST}  "
                    f"{PETAL}alt+k{RST} {MUTED}comandos{RST}  {PETAL}alt+s{RST} {MUTED}sesiones{RST}", W))
