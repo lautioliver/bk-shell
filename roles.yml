@@ -1,0 +1,12 @@
+# Qué provider/modelo corre cada rol de Barrilete Kit.
+# Formato: <rol>: <provider>/<modelo>
+#   provider: claude (Claude Code)  |  codex (Codex CLI, todavía sin probar)
+#   modelo:   lo que acepte el CLI (claude: haiku, sonnet, opus o un id completo)
+#
+# bk busca primero <proyecto>/.barrilete/roles.yml y, rol por rol, cae en este archivo.
+
+planner: claude/opus
+orchestrator: claude/opus
+implementer: claude/sonnet
+implementer-light: claude/haiku
+reviewer: claude/opus

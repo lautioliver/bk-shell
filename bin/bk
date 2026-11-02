@@ -1,0 +1,691 @@
+#!/bin/bash
+# bk — bk shell: workspace de agentes de Barrilete Kit en la terminal (tmux + Claude Code).
+# Cada agente corre en una ventana de la sesión tmux "agents", con BARRILETE_ROLE/MODEL/ISSUE
+# en el entorno (la barra de Sketchybar lo etiqueta con eso).
+set -euo pipefail
+
+WS="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+SESSION="${BK_SESSION:-agents}"
+STATE_DIR="${BK_STATE_DIR:-$HOME/.cache/bk/agents}"
+DRY=0
+
+die()  { printf 'bk: %s\n' "$*" >&2; exit 1; }
+info() { printf '\033[2m%s\033[0m\n' "$*"; }
+
+usage() {
+  cat <<'EOF'
+uso: bk [comando] [--dry-run]
+
+  (sin comando)     el workspace del proyecto de esta carpeta: chat + riel (sesión tmux "bk-<proyecto>";
+                    si ya existe, vuelve a ella). Uno por proyecto, cada uno en su escritorio
+  rerun [--go] [pr…]  volver a correr los checks de Actions que fallaron (sin --go: solo muestra)
+  open [proyecto]   abrir el workspace de otro proyecto en una ventana nueva (sin argumento: los abiertos)
+  plan "<idea>"     planner: /plan-feature en la raíz del proyecto
+  run <issue>       routing.py elige el rol → prepare.sh crea worktree → implementer en tmux
+                    (--role implementer|implementer-light para forzarlo)
+  review <pr>       reviewer: /review-pr en la raíz del proyecto
+  fix <pr> "…"      implementer sobre la rama de un PR abierto (su worktree), con la instrucción dada
+                    (--role implementer-light para usar el liviano)
+  orchestrate       orchestrator: /orchestrate (reparte hasta 3 issues como subagentes)
+  ls                agentes: issue · rol · modelo · estado
+  go <ventana>      saltar a un agente (i42, pr57, plan, orch)
+  changes           lo que los agentes dejaron sin commitear, con diff (alt+g)
+  palette | k       todos los comandos con búsqueda (alt+k)
+  stats             estadísticas de uso: actividad, modelos, rachas, costo (alt+u)
+  customize         estilo del workspace: tarjetas float/neon, densidad, header, tema (alt+,)
+  s                 sesiones de Claude estilo Orca: abiertas (saltar) y recientes de todas las
+                    carpetas (retomar con claude --resume). En tmux: prefijo + s
+  peek [ventana] [n] ver qué hace un agente sin entrar (sin ventana: todos, últimas líneas)
+  say <ventana> "…" escribirle a un agente como si estuvieras en su ventana (aprobaciones incluidas)
+  watch [ventana]   pantalla de un agente en vivo, solo lectura (sin ventana: toma el próximo
+                    agente que nadie esté mirando; --all: todos en un panel, como en el workspace)
+  stop <ventana>    cerrar la ventana del agente (el worktree queda)
+  roles             qué provider/modelo corre cada rol en este proyecto
+  tokens            tokens del día y costo equivalente en API, por modelo y proyecto
+
+Los comandos de agentes se corren dentro de un proyecto Barrilete.
+EOF
+}
+
+# ---------- proyecto y roles ----------
+project_root() {
+  local root
+  root=$(git rev-parse --show-toplevel 2>/dev/null) || die "no estás en un repo git"
+  [ -f "$root/scripts/agents/guardrails.py" ] || die "$root no es un proyecto Barrilete (falta scripts/agents/guardrails.py)"
+  printf '%s' "$root"
+}
+
+# role_spec <rol> [root] -> "provider/modelo"
+role_spec() {
+  local role="$1" root="${2:-}" f spec=""
+  for f in ${root:+"$root/.barrilete/roles.yml"} "$WS/roles.yml"; do
+    [ -f "$f" ] || continue
+    spec=$(sed -nE "s/^[[:space:]]*${role}:[[:space:]]*([^#[:space:]]+).*/\1/p" "$f" | head -1)
+    [ -n "$spec" ] && break
+  done
+  [ -n "$spec" ] || die "el rol '$role' no está en roles.yml"
+  printf '%s' "$spec"
+}
+
+# agent_cmd <provider> <modelo> <prompt> -> comando a correr en el pane
+# Comillas simples a mano: el printf %q de bash 3.2 rompe los acentos (í → $'\255')
+sq() { local s=${1//\'/\'\\\'\'}; printf "'%s'" "$s"; }
+
+agent_cmd() {
+  local provider="$1" model="$2" prompt="$3"
+  prompt=$(sq "$prompt")
+  case "$provider" in
+    claude) printf 'claude --model %q %s' "$model" "$prompt" ;;
+    codex)
+      command -v codex >/dev/null || die "provider codex: Codex CLI no está instalado"
+      # Codex no lee .claude/settings.json: las barandas de guardrails.py NO aplican acá.
+      printf 'codex -m %q %s' "$model" "$prompt" ;;
+    *) die "provider desconocido: $provider (claude | codex)" ;;
+  esac
+}
+
+# ---------- tmux ----------
+need_tmux() { command -v tmux >/dev/null || die "falta tmux (brew install tmux)"; }
+
+has_window() { tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$1"; }
+
+# launch <ventana> <dir> <rol> <ref> <comando>
+launch() {
+  local win="$1" dir="$2" role="$3" ref="$4" cmd="$5" spec provider model
+  spec=$(role_spec "$role" "$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null || true)")
+  provider=${spec%%/*}; model=${spec#*/}
+  local full; full=$(agent_cmd "$provider" "$model" "$cmd")
+
+  printf '%-8s %s · %s/%s\n  dir: %s\n  cmd: %s\n' "$win" "$role" "$provider" "$model" "$dir" "$full"
+  [ "$DRY" -eq 1 ] && { info "(dry-run: no se lanzó nada)"; return 0; }
+
+  need_tmux
+  if has_window "$win"; then
+    # Misma ventana en otro proyecto (#12 de abra y #12 del kit): prefijar con el proyecto
+    local other mine
+    other=$(project_of "$(tmux display-message -p -t "$SESSION:$win" '#{pane_current_path}')")
+    mine=$(project_of "$dir")
+    if [ "$other" != "$mine" ]; then win="${mine:0:8}-$win"; fi
+    has_window "$win" && die "ya existe la ventana '$win' (bk go $win, o bk stop $win)"
+  fi
+  local env=(-e "BARRILETE_ROLE=$role" -e "BARRILETE_MODEL=$model" -e "BARRILETE_PROVIDER=$provider")
+  [ -n "$ref" ] && env+=(-e "BARRILETE_ISSUE=$ref")
+  local pane
+  if tmux has-session -t "$SESSION" 2>/dev/null; then
+    pane=$(tmux new-window -d -P -F '#{pane_id}' -t "$SESSION:" -n "$win" -c "$dir" "${env[@]}" "$full")
+  else
+    pane=$(tmux new-session -d -P -F '#{pane_id}' -s "$SESSION" -n "$win" -c "$dir" "${env[@]}" "$full")
+  fi
+  # La ventana queda abierta si el agente termina, para leer lo último
+  tmux set-option -w -t "$SESSION:$win" remain-on-exit on >/dev/null
+  pre_register "$win" "$pane" "$dir" "$role" "$model" "$ref"
+  info "lanzado → bk go $win"
+}
+
+# Registra al agente en la barra apenas se lanza. Claude Code no corre hooks hasta que aceptás
+# el diálogo de confianza de la carpeta (cada worktree es nueva), así que sin esto el agente
+# sería invisible justo cuando te necesita. El hook real (SessionStart) borra este registro.
+pre_register() {
+  local win="$1" pane="$2" dir="$3" role="$4" model="$5" ref="$6"
+  mkdir -p "$STATE_DIR"
+  jq -n --arg cwd "$dir" --arg role "$role" --arg model "$model" --arg ref "$ref" --arg pane "$pane" '
+    {state: "waiting", tool: "confianza", cwd: $cwd, role: $role, model: $model, pane: $pane,
+     subagents: 0, ts: (now | floor)} + (if $ref != "" then {ref: $ref} else {} end)' \
+    > "$STATE_DIR/bk-$win.json"
+  sketchybar --trigger agent_update >/dev/null 2>&1 || true
+}
+
+go() {
+  need_tmux
+  local win="${1:-}"
+  local target="$SESSION${win:+:$win}"
+  tmux has-session -t "$SESSION" 2>/dev/null || die "no hay agentes (sesión tmux '$SESSION' vacía)"
+  [ -z "$win" ] || has_window "$win" || die "no existe la ventana '$win' (bk ls)"
+  if [ -n "${TMUX:-}" ]; then tmux switch-client -t "$target"; else exec tmux attach -t "$target"; fi
+}
+
+# Pane real del agente de la ventana <win>: si alt+shift+N lo llevó al lugar del chat de un workspace,
+# en su ventana quedó el chat de visita (@bk_ws) y el agente está en <workspace>:main (@bk_guest).
+agent_target() {
+  local win="$1" p ws
+  read -r p ws < <(tmux list-panes -t "$SESSION:$win" -F '#{pane_id} #{@bk_ws}' 2>/dev/null | head -1)
+  if [ -n "$ws" ]; then tmux show-options -wqv -t "$ws:main" @bk_guest; else echo "${p:-$SESSION:$win}"; fi
+}
+
+# Ver la pantalla de un agente sin entrar. Sin ventana: un resumen de todas.
+peek() {
+  need_tmux
+  tmux has-session -t "$SESSION" 2>/dev/null || die "no hay agentes (sesión tmux '$SESSION' vacía)"
+  local win="${1:-}" n="${2:-}"
+  if [ -n "$win" ]; then
+    has_window "$win" || die "no existe la ventana '$win' (bk ls)"
+    tmux capture-pane -p -J -t "$(agent_target "$win")" -S "-${n:-60}"
+    return
+  fi
+  local w
+  for w in $(tmux list-windows -t "$SESSION" -F '#{window_name}'); do
+    printf '\033[1;35m── %s\033[0m\n' "$w"
+    # Sin líneas vacías ni el marco del prompt de Claude Code, para que entre en pantalla
+    tmux capture-pane -p -J -t "$(agent_target "$w")" -S -80 | grep -v '^[[:space:]]*$' | grep -v '^[─╭╰│ ]*$' | tail -n "${n:-8}"
+    echo
+  done
+}
+
+# Escribir en la ventana de un agente: es tu teclado, así que vale como tu respuesta
+# (planes, "publicá", confianza…). Pensado para que lo corras vos; un agente no debería
+# usarlo para aprobar en tu nombre.
+say() {
+  need_tmux
+  local win="${1:?bk say <ventana> \"mensaje\"}"; shift
+  local msg="$*"
+  [ -n "$msg" ] || die "falta el mensaje"
+  has_window "$win" || die "no existe la ventana '$win' (bk ls)"
+  local tp; tp=$(agent_target "$win")
+  tmux send-keys -t "$tp" -l -- "$msg"
+  sleep 0.2
+  tmux send-keys -t "$tp" Enter
+  info "→ $win: $msg   (bk peek $win para ver la respuesta)"
+}
+
+# Espejo en vivo de un agente (solo lectura). Sin ventana, cada `bk watch` "reclama" un agente
+# que no esté mirando otro panel, y cuando ese agente se cierra pasa al siguiente.
+WATCH_DIR="$HOME/.cache/barrilete/watch"
+watch_claimed() {  # ¿hay otro bk watch vivo mirando esta ventana?
+  local f="$WATCH_DIR/$1" pid
+  [ -f "$f" ] || return 1
+  pid=$(cat "$f" 2>/dev/null)
+  [ -n "$pid" ] && [ "$pid" != "$$" ] && kill -0 "$pid" 2>/dev/null
+}
+watch_pick() {
+  # Solo ventanas con un agente vivo: las que quedaron en una shell (agente terminado) no cuentan
+  local w dead cmd
+  while read -r w dead cmd; do
+    [ "$dead" = 1 ] && continue   # remain-on-exit: el agente salió y quedó el pane muerto
+    case "$cmd" in zsh|bash|sh|fish|-zsh|login) continue ;; esac
+    watch_claimed "$w" || { echo "$w"; return; }
+  done < <(tmux list-windows -t "$SESSION" -F '#{window_name} #{pane_dead} #{pane_current_command}' 2>/dev/null)
+}
+watch() {
+  need_tmux
+  # Columna del workspace: todos los agentes en un panel que se reparte solo
+  [ "${1:-}" = "--all" ] && exec python3 "$WS/lib/agents_view.py"
+  # Bucle infinito: que un grep vacío o una ventana que desaparece no lo corten
+  set +euo pipefail
+  local fixed="${1:-}" pane hdr lines cols state
+  win=""   # global: el trap de salida la necesita para liberar el reclamo
+  mkdir -p "$WATCH_DIR"
+  trap 'printf "\033[?25h"; [ -n "$win" ] && [ "$(cat "$WATCH_DIR/$win" 2>/dev/null)" = "$$" ] && rm -f "$WATCH_DIR/$win"; exit 0' INT TERM EXIT
+  printf '\033[?25l\033[2J'
+  while :; do
+    # Elegir / validar la ventana
+    if [ -n "$win" ] && ! has_window "$win"; then
+      rm -f "$WATCH_DIR/$win"; win=""
+    fi
+    # En modo automático, si el agente terminó (quedó una shell), pasar al siguiente
+    if [ -n "$win" ] && [ -z "$fixed" ]; then
+      case "$(tmux display-message -p -t "$SESSION:$win" '#{?pane_dead,dead,#{pane_current_command}}' 2>/dev/null)" in
+        dead|zsh|bash|sh|fish|-zsh|login) rm -f "$WATCH_DIR/$win"; win="" ;;
+      esac
+    fi
+    if [ -z "$win" ]; then
+      if [ -n "$fixed" ]; then has_window "$fixed" && win="$fixed"; else win=$(watch_pick); fi
+      [ -n "$win" ] && [ -z "$fixed" ] && echo $$ > "$WATCH_DIR/$win"
+    fi
+    lines=$(tput lines); cols=$(tput cols)
+    if [ -z "$win" ]; then
+      printf '\033[H\033[2J\033[2m  %s\033[0m' "${fixed:+esperando $fixed…}"
+      [ -z "$fixed" ] && printf '\033[2m  sin agentes libres para mirar (bk run / bk review)\033[0m'
+      sleep 2; continue
+    fi
+    # Encabezado: ventana · rol · modelo · estado (del estado de la barra)
+    pane=$(tmux list-panes -t "$SESSION:$win" -F '#{pane_id}' 2>/dev/null | head -1)
+    state=$(grep -l "\"pane\": *\"$pane\"" "$STATE_DIR"/*.json 2>/dev/null | head -1)
+    hdr="$win"
+    [ -n "$state" ] && hdr+=$(jq -r '"  ·  \(.role // "-")  ·  \(.model // "-")  ·  \(.state // "-")\(if .tool then " (\(.tool))" else "" end)"' "$state" 2>/dev/null)
+    [ -n "${BK_WATCH_KEYS:-}" ] && hdr+="     q cerrar · enter escribirle"
+    {
+      printf '\033[H\033[1;35m%s\033[0m\033[K\n' "${hdr:0:$cols}"
+      # Sin el pie de Claude Code (caja del prompt + "auto mode"): en un panel chico se comía todo
+      tmux capture-pane -p -e -t "$(agent_target "$win")" 2>/dev/null \
+        | grep -v '^[[:space:]]*$' \
+        | awk '{ l[NR] = $0; t = $0; gsub(/\033\[[0-9;?]*[A-Za-z]/, "", t)
+                 if (t ~ /^─────/) { s2 = s1; s1 = NR } }
+               END { n = (s2 ? s2 - 1 : NR); for (i = 1; i <= n; i++) print l[i] }' \
+        | tail -n $((lines - 2)) \
+        | while IFS= read -r l; do printf '%s\033[0m\033[K\n' "$l"; done
+      printf '\033[J'
+    }
+    # Con BK_WATCH_KEYS (popup de la tira): q/esc cierra, enter va a la ventana del agente para escribirle
+    if [ -n "${BK_WATCH_KEYS:-}" ]; then
+      local k=""
+      if IFS= read -rsn1 -t 1 k; then
+        case "$k" in
+          q|$'\e') exit 0 ;;
+          "") # enter: ir a la ventana del agente (alt+q o alt+0 vuelven al workspace)
+              [ -n "$win" ] && tmux switch-client ${BK_WATCH_CLIENT:+-c "$BK_WATCH_CLIENT"} -t "$SESSION:$win"
+              exit 0 ;;
+        esac
+      fi
+    else
+      sleep 1
+    fi
+  done
+}
+
+# ---------- workspace (bk sin argumentos) ----------
+# Layout (sesión tmux "bk"), a lo gentle-shell:
+#   ┌───────────────────────────────┬──────────────────┐
+#   │                               │ ✿ Status         │
+#   │  chat con el orquestador      │ ∗ Agents         │
+#   │  (claude)                     │ ◆ Checkpoints    │
+#   │                               │ ✎ Changes        │
+#   │                               │ ♫ radio · atajos │
+#   └───────────────────────────────┴──────────────────┘
+#    ✿ bk · repo rama · agentes · tokens/costo de hoy        (barra de tmux = footer)
+# Overlays (popups): alt+a agentes · alt+g cambios · alt+k comandos · alt+s sesiones
+# Un workspace por proyecto: sesión tmux "bk-<proyecto>", cada una en su ventana de Ghostty
+# (y su escritorio de macOS). Los agentes siguen en la sesión "agents"; el riel y el footer
+# muestran solo los del proyecto (BK_PROJECT en el entorno de la sesión).
+project_top() {  # raíz del proyecto: el repo, o el repo principal si es un worktree de prepare.sh
+  local top; top=$(git -C "${1:-$PWD}" rev-parse --show-toplevel 2>/dev/null) || { (cd "${1:-$PWD}" && pwd); return; }
+  case "$(basename "$(dirname "$top")")" in
+    *-wt) local main; main="$(dirname "$(dirname "$top")")/$(basename "$(dirname "$top")" | sed 's/-wt$//')"
+          [ -d "$main" ] && { echo "$main"; return; } ;;
+  esac
+  echo "$top"
+}
+project_of() { basename "$(project_top "$1")" | tr '.:' '__'; }
+WS_SESSION="${BK_WS_SESSION:-}"
+
+workspace() {
+  need_tmux
+  local dir; dir=$(cd "${1:-$PWD}" && pwd) || die "no existe $1"
+  local top; top=$(project_top "$dir")
+  WS_SESSION="${WS_SESSION:-bk-$(project_of "$dir")}"
+  if ! tmux has-session -t "$WS_SESSION" 2>/dev/null; then
+    local cols lines chat rail
+    cols=$(tput cols 2>/dev/null || echo 200); lines=$(tput lines 2>/dev/null || echo 50)
+    # El chat sobrevive a un /exit: vuelve a una shell en la misma carpeta
+    chat=$(tmux new-session -d -P -F '#{pane_id}' -s "$WS_SESSION" -n main -c "$dir" -x "$cols" -y "$lines" \
+           -e "BK_PROJECT=$top" "claude; exec \$SHELL")
+    tmux set-environment -t "$WS_SESSION" BK_PROJECT "$top"
+    rail=$(tmux split-window -d -P -F '#{pane_id}' -h -l 34% -t "$chat" -c "$dir" -e "BK_PROJECT=$top" "bk rail")
+    # Tira izquierda: sesiones activas (workspaces y agentes), a lo Gentle Shell 4
+    local side
+    side=$(tmux split-window -d -P -F '#{pane_id}' -hb -l 5 -t "$chat" -c "$dir" "bk sidebar")
+    local p
+    for p in "$chat" "$rail" "$side"; do tmux set-option -p -t "$p" allow-set-title off >/dev/null 2>&1; done
+    tmux select-pane -t "$chat" -T "✿ chat"
+    tmux select-pane -t "$rail" -T "rail"
+    ws_style
+    tmux select-pane -t "$chat"
+    # La sesión nace con el tamaño de la terminal que la crea: reacomodar al conectarse/redimensionar
+    tmux set-hook -t "$WS_SESSION" client-attached "run-shell -b 'bk _layout #{session_name}'"
+    tmux set-hook -t "$WS_SESSION" client-resized "run-shell -b 'bk _layout #{session_name}'"
+  fi
+  if [ -n "${TMUX:-}" ]; then tmux switch-client -t "$WS_SESSION"; else exec tmux attach -t "$WS_SESSION"; fi
+}
+
+# bk open <proyecto|ruta>: ventana nueva de Ghostty con el workspace de ese proyecto, en el
+# escritorio donde estás. Sin argumento: lista los workspaces abiertos.
+resolve_project() {
+  local q="$1" d
+  [ -d "$q" ] && { (cd "$q" && pwd); return; }
+  for d in "$HOME/$q" "$HOME"/*/"$q"; do [ -d "$d" ] && { echo "$d"; return; }; done
+  d=$(find "$HOME" -maxdepth 3 -type d -name "$q" -not -path '*/Library/*' -not -path '*/node_modules/*' \
+        -not -path '*/.*' 2>/dev/null | head -1)
+  [ -n "$d" ] && echo "$d"
+}
+# bk rerun [--go] [pr…]: vuelve a correr los checks de GitHub Actions que fallaron en los PRs
+# abiertos del repo actual (o en los PRs dados). Sin --go solo muestra qué correría.
+cmd_rerun() {
+  local go=0 prs=() n url run
+  while [ $# -gt 0 ]; do
+    case "$1" in --go) go=1 ;; *) prs+=("${1#\#}") ;; esac; shift
+  done
+  [ ${#prs[@]} -gt 0 ] || read -r -a prs < <(gh pr list --state open --json number -q '[.[].number] | join(" ")')
+  [ ${#prs[@]} -gt 0 ] || die "no hay PRs abiertos en este repo"
+  local runs=() seen=" "
+  for n in "${prs[@]}"; do
+    while IFS=$'\t' read -r name state url; do
+      [ "$state" = fail ] || continue
+      run=$(sed -nE 's#.*/actions/runs/([0-9]+)/job/.*#\1#p' <<<"$url")
+      [ -n "$run" ] || { info "#$n $name: no es de GitHub Actions ($url), lo salteo"; continue; }
+      printf '  #%-5s %-24s run %s\n' "$n" "$name" "$run"
+      case "$seen" in *" $run "*) ;; *) seen+="$run "; runs+=("$run") ;; esac
+    done < <(gh pr checks "$n" 2>/dev/null | awk -F'\t' '{print $1"\t"$2"\t"$4}')
+  done
+  [ ${#runs[@]} -gt 0 ] || { info "ningún check fallido para volver a correr"; return; }
+  if [ "$go" -eq 0 ]; then
+    echo; info "${#runs[@]} corridas para volver a correr. Para hacerlo: bk rerun --go ${prs[*]}"
+    return
+  fi
+  for run in "${runs[@]}"; do
+    if gh run rerun "$run" --failed >/dev/null 2>&1; then echo "  ↻ $run"; else echo "  ✗ $run (gh run rerun falló)"; fi
+  done
+}
+
+# bk _agent <sesión> <N|0>: muestra el agente N de la tira en el lugar del chat del workspace (swap-pane:
+# la tira y el riel quedan). 0 devuelve el orquestador. El pane del chat se marca con @bk_ws para
+# reconocerlo aunque esté de visita en la sesión agents.
+ws_agent() {
+  set +euo pipefail
+  local s="${1:?}" n="${2:-0}" w guest chat target
+  w="$s:main"
+  case "$s" in bk*) ;; *) tmux display-message "alt+shift+N funciona dentro de un workspace (bk)"; return ;; esac
+  guest=$(tmux show-options -wqv -t "$w" @bk_guest)
+  chat=$(tmux show-options -wqv -t "$w" @bk_chat)
+  if [ -n "$guest" ] && [ -n "$chat" ]; then           # primero devolver el que está de visita
+    tmux swap-pane -d -s "$guest" -t "$chat" 2>/dev/null
+    tmux set-option -wu -t "$w" @bk_guest; tmux set-option -wu -t "$w" @bk_chat
+    tmux set-option -pu -t "$chat" @bk_ws 2>/dev/null
+  fi
+  [ "$n" = 0 ] && { tmux select-pane -t "${chat:-$w}" 2>/dev/null; return; }
+  # El N-ésimo agente, en el mismo orden que la tira (ventanas de "agents", sin chats de workspaces)
+  target=$(tmux list-panes -s -t "$SESSION" -F '#{pane_id} #{@bk_ws}' 2>/dev/null | awk '$2 == "" {print $1}' | sed -n "${n}p")
+  [ -n "$target" ] || { tmux display-message "no hay agente $n"; return; }
+  chat=$(tmux list-panes -t "$w" -F '#{pane_id} #{pane_start_command}' | grep -v -e 'bk rail' -e 'bk sidebar' | head -1 | cut -d' ' -f1)
+  [ -n "$chat" ] || return
+  tmux set-option -p -t "$chat" @bk_ws "$s"
+  tmux swap-pane -d -s "$target" -t "$chat"
+  tmux set-option -w -t "$w" @bk_guest "$target"; tmux set-option -w -t "$w" @bk_chat "$chat"
+  tmux select-pane -t "$target"
+  tmux display-message "agente $n en el lugar del chat · alt+q vuelve al orquestador"
+}
+
+# Ventana nueva de terminal que corre <comando>: Ghostty si está, si no Terminal de macOS.
+new_window() {
+  if [ -d /Applications/Ghostty.app ]; then
+    open -na Ghostty.app --args -e /bin/zsh -lc "$1"
+  elif [ "$(uname)" = Darwin ]; then
+    osascript -e "tell application \"Terminal\" to do script \"$1\"" -e 'tell application "Terminal" to activate' >/dev/null
+  else
+    die "abrí una terminal nueva y corré: $1"
+  fi
+}
+
+# bk _prs: PRs tuyos listos para mergear y reviews que te pidieron, para la tarjeta Checkpoints del riel
+# (la escribe en ~/.cache/bk/checkpoints_prs.json; el riel la llama cada ~2 min en segundo plano)
+cmd_prs() {
+  set +euo pipefail
+  command -v gh >/dev/null || return 0
+  local CACHE="$HOME/.cache/bk/checkpoints_prs.json" lock="${TMPDIR:-/tmp}/bk_prs.lock"
+  mkdir -p "$(dirname "$CACHE")"; mkdir "$lock" 2>/dev/null || return 0
+  gh api graphql -f query='
+    { mine: search(query: "is:pr is:open author:@me archived:false draft:false", type: ISSUE, first: 30) {
+        nodes { ... on PullRequest {
+          number title url reviewDecision
+          repository { nameWithOwner }
+          reviews(last: 1) { totalCount nodes { body submittedAt } }
+          commits(last: 1) { nodes { commit { committedDate statusCheckRollup { state } } } }
+        } } }
+      asked: search(query: "is:pr is:open review-requested:@me archived:false", type: ISSUE, first: 20) {
+        nodes { ... on PullRequest { number title url repository { nameWithOwner } } } } }' 2>/dev/null \
+  | jq '[(.data.mine.nodes[]
+          # /review-pr publica siempre como comentario, aunque tenga bloqueantes: hay que leer la última
+          # review. Listo = CI verde, última review sin sección "Bloqueante/Blocking" y sin commits
+          # posteriores a esa review (si hubo arreglos, el kit pide revisar de nuevo).
+          | .reviews.nodes[0] as $r
+          | .commits.nodes[0].commit as $c
+          | select(.reviews.totalCount > 0
+                   and .reviewDecision != "CHANGES_REQUESTED"
+                   and ($c.statusCheckRollup.state // "SUCCESS") == "SUCCESS"
+                   # La sección existe siempre: bloquea solo si no dice "Ninguno/None"
+                   and (($r.body // "") | test("(^|\\n)#+\\s*(Bloqueantes?|Blocking|Blockers?)\\b[^\\n]*\\n\\s*(?!(Ningun[oa]|None|No hay|Sin bloqueantes)\\b)\\S"; "i") | not)
+                   and (($c.committedDate // "") <= ($r.submittedAt // "")))
+          | {kind: "merge", repo: .repository.nameWithOwner, number, title, url}),
+         (.data.asked.nodes[] | {kind: "review", repo: .repository.nameWithOwner, number, title, url})]' \
+    > "$CACHE.tmp" 2>/dev/null && [ -s "$CACHE.tmp" ] && mv "$CACHE.tmp" "$CACHE"
+  rm -f "$CACHE.tmp"; rmdir "$lock" 2>/dev/null
+}
+
+cmd_open() {
+  local q="${1:-}"
+  if [ -z "$q" ]; then
+    tmux list-sessions -F '#{session_name}	#{?session_attached,abierto,en segundo plano}	#{session_path}' 2>/dev/null \
+      | awk -F'\t' '$1 ~ /^bk/ {printf "  %-24s %-18s %s\n", $1, $2, $3}'
+    echo; info "bk open <proyecto|ruta> abre uno en una ventana nueva (en el escritorio actual)"
+    return
+  fi
+  # Un workspace ya abierto con ese nombre (bk-<q>, o el único que lo contenga): conectarse a ese
+  local sess
+  sess=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -x "bk-$q" \
+         || tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^bk-' | grep -i -- "$q")
+  if [ -n "$sess" ] && [ "$(wc -l <<<"$sess")" -eq 1 ]; then
+    if [ -n "${TMUX:-}" ]; then tmux switch-client -t "$sess"; else
+      new_window "tmux attach -t $sess"; fi
+    info "→ $sess"; return
+  fi
+  local dir; dir=$(resolve_project "$q"); [ -n "$dir" ] || die "no encuentro el proyecto '$q' (pasá la ruta, o bk open para ver los abiertos)"
+  new_window "cd '$dir' && bk ws"
+  info "abriendo $(project_of "$dir") en una ventana nueva → $dir"
+}
+
+# Paleta gentle (rosa sobre oscuro): bordes finos, sin título en el riel, footer en la barra de tmux
+ws_style() {
+  local t="$WS_SESSION:main" s="$WS_SESSION" pal
+  # Colores del tema (day/night) y posición del header, de lib/gentle.py y ~/.config/bk/ui.json
+  pal=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import gentle as g; p = g.P
+print(p["tint"], p["rose"], p["petal"], p["text"], p["muted"], p["frame"], g.ui()["header"])' "$WS/lib")
+  read -r TINT ROSE PETAL TEXT MUTED FRAME HEAD <<<"$pal"
+  tmux set-option -w -t "$t" pane-border-status off >/dev/null
+  tmux set-option -w -t "$t" pane-border-lines single >/dev/null
+  tmux set-option -w -t "$t" pane-border-style "fg=#$TINT" >/dev/null
+  tmux set-option -w -t "$t" pane-active-border-style "fg=#$FRAME" >/dev/null
+  # Header a lo Gentle Shell 4: barra con fondo, proyecto · carpeta rama · modelo … uso
+  tmux set-option -t "$s" status-position "${HEAD:-top}" >/dev/null
+  tmux set-option -t "$s" status-style "bg=#$TINT,fg=#$MUTED" >/dev/null
+  tmux set-option -t "$s" status-interval 10 >/dev/null
+  tmux set-option -t "$s" status-left-length 100 >/dev/null
+  tmux set-option -t "$s" status-right-length 120 >/dev/null
+  tmux set-option -t "$s" window-status-format '' >/dev/null
+  tmux set-option -t "$s" window-status-current-format '' >/dev/null
+  tmux set-option -t "$s" status-left \
+    "#[fg=#$ROSE,bold]  ✿ #{s/^bk-//:session_name} #[fg=#$MUTED,nobold]· #[fg=#$TEXT]#{s|$HOME|~|:pane_current_path} #[fg=#$PETAL,bold]#(git -C '#{pane_current_path}' branch --show-current 2>/dev/null)#[nobold] #[fg=#$MUTED]· #[fg=#$TEXT]#(bk _model #{session_name})" >/dev/null
+  tmux set-option -t "$s" status-right "#(bk _footer #{session_name})  " >/dev/null
+}
+
+# Modelo del chat del workspace (el pane "main.0"), del estado que escribe el hook
+ws_model() {
+  set +euo pipefail
+  local pane m
+  pane=$(tmux list-panes -t "${1:-}:main" -F '#{pane_id} #{pane_start_command}' 2>/dev/null | awk '/claude/{print $1; exit}')
+  m=$(grep -l "\"pane\": *\"$pane\"" "$STATE_DIR"/*.json 2>/dev/null | head -1 | xargs jq -r '.model // empty' 2>/dev/null)
+  printf '%s' "${m:-claude}"
+}
+
+# Footer: agentes activos · tokens y costo de hoy (usa el caché incremental de usage.py)
+ws_footer() {
+  set +euo pipefail
+  local act tot u top
+  top=$(tmux show-environment -t "${1:-}" BK_PROJECT 2>/dev/null | sed -n 's/^BK_PROJECT=//p')
+  local sel='true'
+  [ -n "$top" ] && sel="((.cwd // \"\") as \$c | (\$c == \"$top\" or (\$c | startswith(\"$top/\")) or (\$c | startswith(\"$top-wt/\"))))"
+  act=$(jq -s "[.[] | select($sel) | select(.state==\"working\" or .state==\"background\" or .state==\"waiting\")] | length" "$STATE_DIR"/*.json 2>/dev/null)
+  tot=$(jq -s "[.[] | select($sel)] | length" "$STATE_DIR"/*.json 2>/dev/null)
+  u=$(python3 "$WS/lib/usage.py" --json 2>/dev/null | jq -r '"\(.tokens/1000000*10|floor/10)M · $\(.cost_usd)"' 2>/dev/null)
+  local word=activos; [ "${act:-0}" = 1 ] && word=activo
+  printf '#[fg=#a99cf5]∗ %s %s#[default] · %s ≈API · usage alt+u' "${act:-0}" "$word" "${u:-—}"
+}
+
+# Proporciones: riel derecho 34 % (mínimo 46 columnas)
+ws_layout() {
+  set +euo pipefail
+  local t="${1:-$WS_SESSION}:main" W rail w side
+  W=$(tmux display-message -p -t "$t" '#{window_width}')
+  [ -n "$W" ] || return 0
+  rail=$(tmux list-panes -t "$t" -F '#{pane_id} #{pane_start_command}' | awk '/bk rail/{print $1; exit}')
+  side=$(tmux list-panes -t "$t" -F '#{pane_id} #{pane_start_command}' | awk '/bk sidebar/{print $1; exit}')
+  w=$((W * 34 / 100)); [ "$w" -lt 46 ] && w=46
+  [ -n "$rail" ] && tmux resize-pane -t "$rail" -x "$w"
+  [ -n "$side" ] && tmux resize-pane -t "$side" -x 5
+  return 0
+}
+
+stop() {
+  need_tmux
+  local win="${1:?bk stop <ventana>}" panes
+  has_window "$win" || die "no existe la ventana '$win'"
+  panes=$(tmux list-panes -t "$SESSION:$win" -F '#{pane_id}')
+  tmux kill-window -t "$SESSION:$win"
+  # Matar el pane no siempre dispara SessionEnd: limpiar el estado de la barra a mano
+  for p in $panes; do
+    grep -l "\"pane\": *\"$p\"" "$STATE_DIR"/*.json 2>/dev/null | xargs rm -f
+  done
+  sketchybar --trigger agent_update >/dev/null 2>&1 || true
+  info "cerrada $win (el worktree, si había, queda: cleanup.sh lo limpia cuando el issue cierre)"
+}
+
+ls_agents() {
+  local files=("$STATE_DIR"/*.json)
+  # Ventanas tmux por pane, para mostrar a qué ventana saltar
+  local map='{}'
+  if command -v tmux >/dev/null && tmux has-session -t "$SESSION" 2>/dev/null; then
+    map=$(tmux list-panes -s -t "$SESSION" -F '#{pane_id} #{window_name}' \
+          | jq -R 'split(" ") | {(.[0]): .[1]}' | jq -s 'add // {}')
+  fi
+  if [ ! -e "${files[0]}" ]; then echo "sin agentes"; return; fi
+  jq -s -r --argjson map "$map" '
+    def nz: if . == null or . == "" then "-" else tostring end;
+    sort_by(-.ts) | .[]
+    | [ ($map[.pane // ""] // "-"),
+        (.cwd | split("/") as $p | if ($p[-2] // "" | endswith("-wt"))
+           then "\($p[-2] | sub("-wt$"; ""))#\($p[-1])" else $p[-1] end),
+        (.ref|nz), (.role|nz),
+        ((.model // "") | sub("^claude-";"") | sub("-[0-9]{8}$";"") | nz),
+        (if .phase == "plan_pending" and (.state == "done" or .state == "idle") then "plan esperando tu sí"
+         else .state end),
+        "\((now - .ts) / 60 | floor)m" ] | @tsv' "${files[@]}" \
+  | { printf 'VENTANA\tPROYECTO\tREF\tROL\tMODELO\tESTADO\tHACE\n'; cat; } | column -t -s $'\t'
+}
+
+roles() {
+  local root; root=$(git rev-parse --show-toplevel 2>/dev/null || true)
+  for r in planner orchestrator implementer implementer-light reviewer; do
+    printf '%-18s %s\n' "$r" "$(role_spec "$r" "$root")"
+  done
+}
+
+
+# ---------- comandos de agentes ----------
+cmd_plan() {
+  local idea="$*"; [ -n "$idea" ] || die 'bk plan "<idea>"'
+  local root; root=$(project_root)
+  launch plan "$root" planner "" "/plan-feature $idea"
+}
+
+cmd_review() {
+  local pr="${1:?bk review <pr>}"; pr=${pr#\#}
+  local root; root=$(project_root)
+  launch "pr$pr" "$root" reviewer "#$pr" "/review-pr $pr"
+}
+
+cmd_orchestrate() {
+  local root; root=$(project_root)
+  launch orch "$root" orchestrator "" "/orchestrate"
+}
+
+# Retomar un PR abierto: mismo worktree/rama del implementer original (o uno nuevo si no existe).
+cmd_fix() {
+  local n="" role="implementer" msg=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --role) role="${2:?--role necesita un valor}"; shift 2 ;;
+      *) if [ -z "$n" ]; then n="${1#\#}"; else msg+="${msg:+ }$1"; fi; shift ;;
+    esac
+  done
+  [[ "$n" =~ ^[0-9]+$ ]] && [ -n "$msg" ] || die "bk fix <pr> \"instrucción\""
+  local root branch wt issue win
+  root=$(project_root)
+  branch=$(cd "$root" && gh pr view "$n" --json headRefName,state -q 'select(.state=="OPEN") | .headRefName') \
+    || die "no pude leer el PR #$n"
+  [ -n "$branch" ] || die "el PR #$n no está abierto"
+  # El worktree que ya tiene esa rama; si no hay, uno nuevo al lado de los de prepare.sh
+  wt=$(git -C "$root" worktree list --porcelain | awk -v b="refs/heads/$branch" '/^worktree /{w=$2} $0=="branch "b{print w}')
+  if [ -z "$wt" ]; then
+    wt="$(dirname "$root")/$(basename "$root")-wt/pr$n"
+    [ "$DRY" -eq 1 ] || { git -C "$root" fetch -q origin "$branch" && git -C "$root" worktree add -q "$wt" "$branch"; } \
+      || die "no pude crear el worktree de $branch"
+  fi
+  issue=$(sed -nE 's#^claude/([0-9]+)-.*#\1#p' <<<"$branch")
+  win="f$n"
+  launch "$win" "$wt" "$role" "#${issue:-$n}" "Retomás el PR #$n (rama $branch, ya hecha por otro implementer). Seguí el flujo de /implement-issue ${issue:-} para correcciones de un PR existente (TDD, red.sh, verify, cuerpo del PR) y no abras otro PR. Tarea: $msg"
+}
+
+cmd_run() {
+  local n="" role=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --role) role="${2:?--role necesita un valor}"; shift 2 ;;
+      *) n="${1#\#}"; shift ;;
+    esac
+  done
+  [[ "$n" =~ ^[0-9]+$ ]] || die "bk run <issue>"
+  local root; root=$(project_root)
+
+  if [ -z "$role" ]; then
+    local out
+    out=$(cd "$root" && .claude/skills/orchestrate/routing.py "$n") || die "routing.py falló para #$n"
+    case "$(sed -n 1p <<<"$out")" in
+      haiku)  role=implementer-light ;;
+      sonnet) role=implementer ;;
+      *) die "routing.py devolvió algo inesperado: $out" ;;
+    esac
+    info "routing: $(sed -n 2p <<<"$out")"
+  fi
+
+  if [ "$DRY" -eq 1 ]; then
+    launch "i$n" "<worktree de prepare.sh>" "$role" "#$n" "/implement-issue $n"
+    return
+  fi
+
+  # Mismo camino que /orchestrate: fetch una vez, prepare.sh valida, asigna y crea el worktree
+  git -C "$root" fetch -q origin
+  local prep wt
+  prep=$(cd "$root" && .claude/skills/implement-issue/prepare.sh "$n" --worktree 2>&1) \
+    || { printf '%s\n' "$prep" >&2; die "prepare.sh rechazó #$n (ver arriba)"; }
+  wt=$(sed -nE 's/^Worktree: (.+)$/\1/p' <<<"$prep" | tail -1)
+  [ -d "$wt" ] || { printf '%s\n' "$prep" >&2; die "prepare.sh no informó el worktree"; }
+  launch "i$n" "$wt" "$role" "#$n" "/implement-issue $n"
+}
+
+# ---------- main ----------
+ARGS=()
+for a in "$@"; do [ "$a" = "--dry-run" ] && DRY=1 || ARGS+=("$a"); done
+set -- "${ARGS[@]+"${ARGS[@]}"}"
+
+case "${1:-}" in
+  plan)        shift; cmd_plan "$@" ;;
+  run)         shift; cmd_run "$@" ;;
+  review)      shift; cmd_review "$@" ;;
+  fix)         shift; cmd_fix "$@" ;;
+  orchestrate) cmd_orchestrate ;;
+  ls)          ls_agents ;;
+  go)          shift; go "${1:-}" ;;
+  peek)        shift; peek "${1:-}" "${2:-}" ;;
+  say)         shift; say "$@" ;;
+  watch)       shift; watch "${1:-}" ;;
+  stop)        shift; stop "${1:-}" ;;
+  roles)       roles ;;
+  tokens)      exec python3 "$WS/lib/usage.py" ;;
+  ""|ws)       shift || true; workspace "${1:-}" ;;
+  open)        shift; cmd_open "${1:-}" ;;
+  rerun)       shift; cmd_rerun "$@" ;;
+  _prs)        cmd_prs ;;
+  rail)        exec python3 "$WS/lib/rail.py" ;;
+  sidebar)     exec python3 "$WS/lib/sidebar.py" ;;
+  _nth)        tmux list-sessions -F '#{session_created} #{session_name}' 2>/dev/null \
+                 | awk '$2 ~ /^bk/' | sort -n | awk -v n="${2:-1}" 'NR == n {print $2}' ;;
+  changes)     exec python3 "$WS/lib/changes.py" ;;
+  palette|k)   exec python3 "$WS/lib/palette.py" ;;
+  _layout)     ws_layout "${2:-}" ;;
+  _agent)      ws_agent "${2:-}" "${3:-0}" ;;
+  _footer)     ws_footer "${2:-}" ;;
+  _model)      ws_model "${2:-}" ;;
+  _style)      WS_SESSION="${2:?}"; ws_style ;;
+  stats)       exec python3 "$WS/lib/stats.py" ;;
+  customize)   exec python3 "$WS/lib/customize.py" ;;
+  s|sessions)  exec python3 "$WS/lib/sessions.py" ;;
+  -h|--help|help) usage ;;
+  *) usage >&2; exit 2 ;;
+esac

@@ -1,0 +1,153 @@
+"""Estilo compartido de las vistas de bk, a lo Gentle Shell 4.
+
+Dos estilos de tarjeta (bk customize → Cards), guardados en ~/.config/bk/ui.json:
+  float (default)  panel sin borde sobre un fondo apenas distinto, con barra de acento ▎
+                    ▎ ✿ Status                          1 agente
+                    ▎ Project   ~/barrilete-kit
+  neon              marco redondeado con título, como Gentle Shell 3
+Densidad: comfortable (filas en blanco arriba/abajo del título) o compact.
+Los colores siguen al tema de Ghostty que maneja `bk theme` (day = lavanda claro, night = violeta oscuro).
+"""
+import json, os, re, subprocess, unicodedata
+
+ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+UI_FILE = os.path.expanduser("~/.config/bk/ui.json")
+GHOSTTY = os.path.expanduser("~/Library/Application Support/com.mitchellh.ghostty/config.ghostty")
+DEFAULTS = {"cards": "float", "density": "comfortable", "rail": "right", "header": "top"}
+
+
+def ui():
+    try:
+        return {**DEFAULTS, **json.load(open(UI_FILE))}
+    except (OSError, ValueError):
+        return dict(DEFAULTS)
+
+
+def save_ui(conf):
+    os.makedirs(os.path.dirname(UI_FILE), exist_ok=True)
+    json.dump(conf, open(UI_FILE, "w"), indent=1)
+
+
+def is_day():
+    """Tema de día si Ghostty usa bk-day (o auto con macOS en modo claro)."""
+    try:
+        line = [l for l in open(GHOSTTY) if l.startswith("theme")][-1]
+    except (OSError, IndexError):
+        return False
+    if "light:" in line:
+        r = subprocess.run(["defaults", "read", "-g", "AppleInterfaceStyle"], capture_output=True, text=True)
+        return "Dark" not in r.stdout
+    return "bk-day" in line
+
+
+def fg(h):
+    h = h.lstrip("#")
+    return f"\033[38;2;{int(h[0:2], 16)};{int(h[2:4], 16)};{int(h[4:6], 16)}m"
+
+
+def bg(h):
+    h = h.lstrip("#")
+    return f"\033[48;2;{int(h[0:2], 16)};{int(h[2:4], 16)};{int(h[4:6], 16)}m"
+
+
+RST, BOLD, DIM, ITAL = "\033[0m", "\033[1m", "\033[2m", "\033[3m"
+NIGHT = {"rose": "F095C8", "petal": "D7A0B8", "iris": "A99CF5", "amber": "E6B450", "green": "8CCB8A",
+         "red": "F07178", "text": "ECE4F0", "muted": "8A80A8", "frame": "7A5F9E", "tint": "2A2852"}
+DAY = {"rose": "B0307A", "petal": "8A4E7A", "iris": "5B4BC7", "amber": "8C6B00", "green": "2F7A45",
+       "red": "B4235A", "text": "2B1D3F", "muted": "6E5A8A", "frame": "9A86C0", "tint": "D9CBEE"}
+P = DAY if is_day() else NIGHT
+ROSE, PETAL, IRIS, AMBER = fg(P["rose"]), fg(P["petal"]), fg(P["iris"]), fg(P["amber"])
+GREEN, RED, TEXT, MUTED, FRAME = fg(P["green"]), fg(P["red"]), fg(P["text"]), fg(P["muted"]), fg(P["frame"])
+TINT = bg(P["tint"])
+
+
+def cw(ch):
+    if unicodedata.combining(ch):
+        return 0
+    return 2 if unicodedata.east_asian_width(ch) in "WF" else 1
+
+
+def vlen(s):
+    return sum(cw(c) for c in ANSI.sub("", s))
+
+
+def cut(line, width):
+    """Corta a `width` columnas visibles conservando los colores (con "…" si sobra texto)."""
+    if vlen(line) <= width:
+        return line + RST
+    out, w, i = [], 0, 0
+    while i < len(line):
+        m = ANSI.match(line, i)
+        if m:
+            out.append(m.group(0)); i = m.end(); continue
+        c = cw(line[i])
+        if w + c > width - 1:
+            break
+        out.append(line[i]); w += c; i += 1
+    return "".join(out) + ("…" if width > 0 else "") + RST
+
+
+def fit(s, width):
+    s = cut(s, width) if vlen(s) > width else s
+    return s + " " * max(0, width - vlen(s))
+
+
+def lr(left, right, width):
+    """Texto a la izquierda y a la derecha en `width` columnas."""
+    gap = width - vlen(left) - vlen(right)
+    if gap < 1:
+        return fit(left, width)
+    return left + " " * gap + right
+
+
+def _float(title, rows, width, accent, glyph, right, compact):
+    """Panel float: margen de 1, fondo tintado, barra ▎ del color del tono, aire arriba y abajo."""
+    inner = width - 5                     # margen + ▎ + espacio … espacio + margen
+    def paint(content):
+        # El fondo se re-aplica después de cada RST interno para que el panel quede parejo
+        body = fit(content, inner).replace(RST, RST + TINT)
+        return f" {TINT}{accent}▎{RST}{TINT} {body} {RST} "
+    head = f"{accent}{glyph} {BOLD}{title}{RST}"
+    tr = f"{MUTED}{right}{RST}" if right else ""
+    out = [] if compact else [paint("")]
+    out.append(paint(lr(head, tr, inner)))
+    if not compact:
+        out.append(paint(""))
+    out += [paint(r) for r in rows]
+    if not compact:
+        out.append(paint(""))
+    out.append("")
+    return out
+
+
+def _neon(title, rows, width, color, accent, glyph, right):
+    inner = width - 4
+    head = f"{accent}{glyph} {BOLD}{title}{RST}"
+    tr = f" {MUTED}{right}{RST} " if right else ""
+    fill = width - 4 - vlen(head) - vlen(tr) - 1
+    out = [f"{color}╭─ {RST}{head}{color} {'─' * max(0, fill)}{RST}{tr}{color}╮{RST}"]
+    for r in rows:
+        out.append(f"{color}│{RST} {fit(r, inner)} {color}│{RST}")
+    out.append(f"{color}╰{'─' * (width - 2)}╯{RST}")
+    return out
+
+
+def card(title, rows, width, color=None, accent=None, glyph="✿", right=""):
+    """Tarjeta en el estilo elegido. `color` es el tono (marco en neon, barra en float)."""
+    conf = ui()
+    accent = accent or ROSE
+    tone = color if color and color != FRAME else accent
+    if conf["cards"] == "neon":
+        return _neon(title, rows, width, color or FRAME, accent, glyph, right)
+    return _float(title, rows, width, tone, glyph, right, conf["density"] == "compact")
+
+
+def section(label, value, width, label_w=9):
+    """Fila "Project   ~/barrilete-kit" del panel Status."""
+    return fit(f"{MUTED}{label:<{label_w}}{RST}{TEXT}{value}{RST}", width)
+
+
+def hint(keys, width):
+    """Fila de atajos: `j/k select   enter abrir …` con la tecla resaltada."""
+    parts = [f"{PETAL}{k}{RST} {MUTED}{v}{RST}" for k, v in keys]
+    return fit("   ".join(parts), width)
