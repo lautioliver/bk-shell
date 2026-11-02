@@ -300,7 +300,8 @@ RIENDA = G.fg("B4122B")     # la rienda roja
 
 # Pixel art con medios bloques (▀ = píxel de arriba con fg, de abajo con bg), copiado del logo:
 # hélices, cuerpo claro, visor oscuro con ojos azules y la rienda roja.
-PET_COL = {"P": "C9CED8", "S": "C9CED8", "B": "E9ECF1", "V": "14161A", "E": "8FB0FF", "R": "B4122B", "X": "F07178"}
+PET_COL = {"P": "C9CED8", "S": "C9CED8", "B": "E9ECF1", "V": "14161A", "E": "8FB0FF", "R": "B4122B", "X": "F07178",
+           "L": "6E7FB0"}   # L: párpados (dormido)
 PET_BODY = [
     "...S..........S...",
     "...S.BBBBBBBB.S...",
@@ -358,7 +359,7 @@ def mascot(W, live):
     spin = [7, 5, 1, 5]
     w = spin[t % 4] if mood in ("fly", "wait") else spin[(t // 3) % 4] if mood == "slow" else 7
     if mood == "sleep":
-        a, b = "V", "E"                       # ojos cerrados: solo la mitad de abajo
+        a, b = "V", "V"                       # ojos cerrados: los dibujan los párpados (abajo)
     elif mood == "wait":
         a = b = "X"                           # ojos rojos
     elif t % 24 == 0:
@@ -366,6 +367,9 @@ def mascot(W, live):
     else:
         a = b = "E"
     rows = [_props(w)] + [r.replace("{a}", a).replace("{b}", b) for r in PET_BODY]
+    if mood == "sleep":
+        # Dormido: párpados, una rayita de 2 píxeles por ojo en la mitad de abajo
+        rows[6] = "....BVLLVVLLVB...."
     art = _pixels(rows)
     sway = "╰─╮" if (t // 6) % 2 else "╭─╯"   # la correa se mueve
     zz = ["  z", " z ", "z  "][(t // 6) % 3] if mood == "sleep" else "   "
