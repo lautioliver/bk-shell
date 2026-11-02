@@ -114,7 +114,7 @@ fi
 BG=0
 if [ "$STATE" = "done" ] && [ "$TRANSCRIPT" != "-" ] && [ -f "$TRANSCRIPT" ]; then
   BG=$(python3 - "$TRANSCRIPT" "$SID" <<'PY' 2>/dev/null
-import glob, json, os, re, subprocess, sys, time
+import glob, json, os, re, shutil, subprocess, sys, time
 from datetime import datetime
 t, sid = sys.argv[1:]
 d = open(t, errors="replace").read()
@@ -122,8 +122,12 @@ started = set(re.findall(r'"backgroundTaskId":"([A-Za-z0-9_-]+)"', d))
 finished = set(re.findall(r"<task-id>([A-Za-z0-9_-]+)</task-id>", d))
 n = 0
 for tid in started - finished:
-    for out in glob.glob(f"/private/tmp/claude-*/*/{sid}/tasks/{tid}.output"):
-        if subprocess.run(["/usr/sbin/lsof", "-t", out], capture_output=True).stdout.strip():
+    # Dónde deja Claude Code la salida de los comandos en 2º plano (macOS: /private/tmp; Linux: /tmp)
+    roots = os.environ.get("BK_TASKS_GLOB", "/private/tmp/claude-*/*:/tmp/claude-*/*").split(":")
+    outs = [o for r in roots for o in glob.glob(f"{r}/{sid}/tasks/{tid}.output")]
+    lsof = shutil.which("lsof") or "/usr/sbin/lsof"
+    for out in outs:
+        if subprocess.run([lsof, "-t", out], capture_output=True).stdout.strip():
             n += 1
             break
 # Monitor: {"taskId", "timeoutMs"} sin archivo de salida; vivo si no avisó y no venció su timeout

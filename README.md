@@ -85,5 +85,11 @@ bk help            # todo lo demás
 - El estilo (tarjetas *float* o *neon*, densidad, header arriba o abajo) se guarda en `~/.config/bk/ui.json`.
 - Los costos son el **equivalente en API** de los tokens (con una suscripción no se cobra así).
 
+## Tests
+
+```bash
+bash tests/run.sh        # hook de estado, bk, instalador y vistas (también corre en CI: macOS y Linux)
+```
+
 Inspirado en [Gentle Shell](https://github.com/Gentleman-Programming/gentle-shell) de Gentleman Programming.
 Licencia MIT.

@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Tests del hook de estado (hooks/agent_state.sh): es lo que corre antes de cada herramienta de cada
+# agente, así que un error acá frena todo. Cada caso le pasa el JSON de un evento de Claude Code y
+# mira el archivo de estado que deja en un BK_STATE_DIR temporal.
+set -u
+HERE="$(cd "$(dirname "$0")" && pwd)"; ROOT="$(dirname "$HERE")"
+HOOK="$ROOT/hooks/agent_state.sh"
+source "$HERE/lib.sh"
+
+TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
+# Aislar del entorno de quien corre los tests (bk lanza agentes con estas variables)
+unset BARRILETE_ROLE BARRILETE_MODEL BARRILETE_ISSUE BARRILETE_PROVIDER TMUX_PANE
+export BK_STATE_DIR="$TMP/state"
+ev() { printf '%s' "$1" | bash "$HOOK"; }
+field() { jq -r "$2 // \"-\"" "$BK_STATE_DIR/$1.json" 2>/dev/null; }
+
+bash -n "$HOOK"; check $? "el hook no tiene errores de sintaxis"
+
+ev '{"session_id":"s1","hook_event_name":"SessionStart","cwd":"/tmp/p"}'
+check_eq "$(field s1 .state)" idle "SessionStart deja la sesión libre"
+
+ev '{"session_id":"s1","hook_event_name":"UserPromptSubmit","cwd":"/tmp/p","prompt":"/implement-issue 42"}'
+check_eq "$(field s1 .state)" working "un prompt pasa a trabajando"
+check_eq "$(field s1 .role)" implementer "/implement-issue marca el rol implementer"
+check_eq "$(field s1 .ref)" "#42" "/implement-issue 42 marca el issue"
+
+ev '{"session_id":"s1","hook_event_name":"PermissionRequest","tool_name":"Bash","cwd":"/tmp/p"}'
+check_eq "$(field s1 .state)" waiting "un permiso pasa a te espera"
+check_eq "$(field s1 .wait)" permission "un permiso de Bash es 'permission'"
+
+ev '{"session_id":"s1","hook_event_name":"PostToolUse","tool_name":"Bash","cwd":"/tmp/p","tool_input":{"command":"ls"}}'
+check_eq "$(field s1 .state)" working "después de la herramienta vuelve a trabajando"
+check_eq "$(field s1 .wait)" - "al seguir se borra qué esperaba"
+
+ev '{"session_id":"s2","hook_event_name":"PermissionRequest","tool_name":"AskUserQuestion","cwd":"/tmp/p"}'
+check_eq "$(field s2 .wait)" question "AskUserQuestion es 'question'"
+
+ev '{"session_id":"s1","hook_event_name":"Stop","cwd":"/tmp/p"}'
+check_eq "$(field s1 .state)" done "Stop sin nada en segundo plano es listo"
+
+# planner.py: solo cuenta si el comando lo CORRE, no si lo nombra
+ev '{"session_id":"s3","hook_event_name":"PostToolUse","tool_name":"Bash","cwd":"/tmp/p","tool_input":{"command":"python3 .claude/skills/plan-feature/planner.py --draft plan.json"}}'
+check_eq "$(field s3 .phase)" plan_pending "planner.py --draft deja el plan esperando el sí"
+ev '{"session_id":"s4","hook_event_name":"PostToolUse","tool_name":"Bash","cwd":"/tmp/p","tool_input":{"command":"grep -n planner.py --draft README.md"}}'
+check_eq "$(field s4 .phase)" - "nombrar planner.py en un grep no es un plan"
+
+# Segundo plano: un comando lanzado y sin aviso de fin, con su salida abierta por un proceso
+SID=s5; TR="$TMP/$SID.jsonl"; OUT="$TMP/claude-x/proj/$SID/tasks"; mkdir -p "$OUT"
+echo '{"type":"user","toolUseResult":{"backgroundTaskId":"bg1"}}' >"$TR"
+sleep 30 >"$OUT/bg1.output" & HOLD=$!
+sleep 0.3
+BK_TASKS_GLOB="$TMP/claude-*/*" ev "{\"session_id\":\"$SID\",\"hook_event_name\":\"Stop\",\"cwd\":\"/tmp/p\",\"transcript_path\":\"$TR\"}"
+kill $HOLD 2>/dev/null; wait $HOLD 2>/dev/null
+check_eq "$(field $SID .state)" background "Stop con un comando vivo en 2º plano no es listo"
+echo '{"type":"queue-operation","content":"<task-notification><task-id>bg1</task-id>"}' >>"$TR"
+BK_TASKS_GLOB="$TMP/claude-*/*" ev "{\"session_id\":\"$SID\",\"hook_event_name\":\"Stop\",\"cwd\":\"/tmp/p\",\"transcript_path\":\"$TR\"}"
+check_eq "$(field $SID .state)" done "cuando el comando avisa que terminó, es listo"
+
+# Robustez: basura por stdin no rompe nada (sale con 0 y no imprime)
+out=$(printf 'no es json' | bash "$HOOK"; echo "rc=$?")
+check_eq "$out" "rc=0" "una entrada inválida no frena a Claude"
+
+ev '{"session_id":"s1","hook_event_name":"SessionEnd","cwd":"/tmp/p"}'
+[ ! -e "$BK_STATE_DIR/s1.json" ]; check $? "SessionEnd borra el estado"
+
+finish
