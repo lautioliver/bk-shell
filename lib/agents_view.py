@@ -162,6 +162,13 @@ def frame(W, H):
 
 
 def main():
+    # Teclas: q o esc cierran (en el popup de alt+a no había forma de salir). Solo si hay terminal.
+    import select, termios, tty
+    fd, old = sys.stdin.fileno(), None
+    try:
+        old = termios.tcgetattr(fd); tty.setcbreak(fd)
+    except (termios.error, ValueError):
+        pass
     sys.stdout.write("\033[?25l\033[2J")
     try:
         while True:
@@ -173,10 +180,17 @@ def main():
             lines = (frame(W, H) + [""] * H)[:H]
             sys.stdout.write("\033[H" + "\033[K\n".join(cut(l, W) for l in lines) + "\033[K")
             sys.stdout.flush()
-            time.sleep(1)
+            if old is not None:
+                r, _, _ = select.select([fd], [], [], 1)
+                if r and os.read(fd, 16)[:1] in (b"q", b"\x1b"):
+                    break
+            else:
+                time.sleep(1)
     except KeyboardInterrupt:
         pass
     finally:
+        if old is not None:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
         sys.stdout.write("\033[?25h")
 
 
