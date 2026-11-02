@@ -244,7 +244,7 @@ watch() {
     state=$(grep -l "\"pane\": *\"$pane\"" "$STATE_DIR"/*.json 2>/dev/null | head -1)
     hdr="$win"
     [ -n "$state" ] && hdr+=$(jq -r '"  ·  \(.role // "-")  ·  \(.model // "-")  ·  \(.state // "-")\(if .tool then " (\(.tool))" else "" end)"' "$state" 2>/dev/null)
-    [ -n "${BK_WATCH_KEYS:-}" ] && hdr+="     q cerrar · enter escribirle"
+    [ -n "${BK_WATCH_KEYS:-}" ] && hdr+="     q volver · enter escribirle · x cerrar el agente"
     {
       printf '\033[H\033[1;35m%s\033[0m\033[K\n' "${hdr:0:$cols}"
       # Sin el pie de Claude Code (caja del prompt + "auto mode"): en un panel chico se comía todo
@@ -263,6 +263,7 @@ watch() {
       if IFS= read -rsn1 -t 1 k; then
         case "$k" in
           q|$'\e') exit 0 ;;
+          x) [ -n "$win" ] && "$0" stop "$win" >/dev/null 2>&1; exit 0 ;;   # cerrar ese agente
           "") # enter: ir a la ventana del agente (alt+q o alt+0 vuelven al workspace)
               [ -n "$win" ] && tmux switch-client ${BK_WATCH_CLIENT:+-c "$BK_WATCH_CLIENT"} -t "$SESSION:$win"
               exit 0 ;;
