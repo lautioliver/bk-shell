@@ -2,6 +2,7 @@
 """bk new (alt+n, o el + de la tira): crear sin salir del workspace.
 
   ✿ Chat nuevo en <proyecto>     un claude nuevo en la carpeta del proyecto, en el lugar del chat
+  ✿ Chat sin proyecto            un claude en ~/.bk/chats, para preguntas sueltas
   ─ Abrir workspace de otro proyecto
     barrilete-kit      abierto   ir a ese workspace
     abra                         crearlo y entrar
@@ -88,6 +89,7 @@ def ui(scr):
     items = []
     if here_proj:
         items.append(("chat", here_proj, f"✿ Chat nuevo en {os.path.basename(here_proj)}"))
+    items.append(("loose", "", "✿ Chat sin proyecto"))
     items += [("ws", p, p) for p in projs]
     sel, typing, path = 0, False, ""
     while True:
@@ -109,7 +111,7 @@ def ui(scr):
                 if y >= H - 2:
                     break
             attr = curses.A_REVERSE if i == sel and not typing else 0
-            if kind == "chat":
+            if kind in ("chat", "loose"):
                 scr.addnstr(y, 2, label, W - 3, attr | ROSE | curses.A_BOLD)
             else:
                 name = os.path.basename(p)
@@ -159,6 +161,8 @@ def main():
     env = dict(os.environ)
     if kind == "chat":
         subprocess.run([BK, "chat", os.environ.get("BK_FROM", "")], env=env)
+    elif kind == "loose":
+        subprocess.run([BK, "chat", "--suelto", os.environ.get("BK_FROM", "")], env=env)
     else:
         sess = open_sessions().get(path)
         client = os.environ.get("BK_CLIENT")

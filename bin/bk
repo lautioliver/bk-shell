@@ -20,7 +20,7 @@ uso: bk [comando] [--dry-run]
                     si ya existe, vuelve a ella). Uno por proyecto, cada uno en su escritorio
   rerun [--go] [pr…]  volver a correr los checks de Actions que fallaron (sin --go: solo muestra)
   new | n           popup "Nuevo": chat nuevo en este proyecto u otro workspace (alt+n, o + en la tira)
-  chat              un claude nuevo en el proyecto del workspace, en el lugar del chat (alt+q vuelve)
+  chat [--suelto]   un claude nuevo en el proyecto del workspace (o sin proyecto), en el lugar del chat (alt+q vuelve)
   open [proyecto]   abrir el workspace de otro proyecto en una ventana nueva (sin argumento: los abiertos)
   plan "<idea>"     planner: /plan-feature en la raíz del proyecto
   run <issue>       routing.py elige el rol → prepare.sh crea worktree → implementer en tmux
@@ -412,9 +412,15 @@ new_window() {
 # "agents" (aparece en la tira) y se trae al lugar del chat; alt+q vuelve al orquestador.
 cmd_chat() {
   set +euo pipefail
+  local loose=0; [ "${1:-}" = "--suelto" ] && { loose=1; shift; }
   local s="${1:-$(tmux display-message -p '#{session_name}' 2>/dev/null)}" top name n pane
-  top=$(tmux show-environment -t "$s" BK_PROJECT 2>/dev/null | sed -n 's/^BK_PROJECT=//p')
-  top="${top:-$PWD}"; name="c-$(basename "$top" | cut -c1-10)"
+  if [ "$loose" = 1 ]; then
+    # Chat sin proyecto: en una carpeta propia (~/.bk/chats), así Claude no lee tu home ni pide confiar en ella
+    top="$HOME/.bk/chats"; mkdir -p "$top"; name="c-suelto"
+  else
+    top=$(tmux show-environment -t "$s" BK_PROJECT 2>/dev/null | sed -n 's/^BK_PROJECT=//p')
+    top="${top:-$PWD}"; name="c-$(basename "$top" | cut -c1-10)"
+  fi
   n=1; while has_window "$name$([ $n -gt 1 ] && echo "-$n")"; do n=$((n + 1)); done
   [ $n -gt 1 ] && name="$name-$n"
   if tmux has-session -t "$SESSION" 2>/dev/null; then
