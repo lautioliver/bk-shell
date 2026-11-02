@@ -123,6 +123,11 @@ def roles_profile(top):
 _profile = {"t": 0, "v": "—"}
 
 
+def wait_kind(s):
+    """question = te hizo una pregunta (AskUserQuestion) · permission = pide permiso."""
+    return s.get("wait") or ("question" if s.get("tool") == "AskUserQuestion" else "permission")
+
+
 def card_status(W, cwd, live):
     top = sh("git", "-C", cwd, "rev-parse", "--show-toplevel").strip()
     path = (PROJECT or top or cwd).replace(os.path.expanduser("~"), "~")
@@ -176,6 +181,8 @@ def card_agents(W, live, ended):
     for a in live:
         s = a["s"]
         g, txt, col = STATE_UI.get(s.get("state"), ("·", s.get("state") or "—", MUTED))
+        if s.get("state") == "waiting":
+            g, txt = ("?", "te pregunta") if wait_kind(s) == "question" else ("!", "pide permiso")
         if s.get("tool") == "confianza":
             g, txt, col = "●", "confiá carpeta", RED
         if s.get("state") == "background" and s.get("background"):
@@ -301,6 +308,7 @@ RIENDA = G.fg("B4122B")     # la rienda roja
 # Pixel art con medios bloques (▀ = píxel de arriba con fg, de abajo con bg), copiado del logo:
 # hélices, cuerpo claro, visor oscuro con ojos azules y la rienda roja.
 PET_COL = {"P": "C9CED8", "S": "C9CED8", "B": "E9ECF1", "V": "14161A", "E": "8FB0FF", "R": "B4122B", "X": "F07178",
+           "Q": "E6B450",   # Q: ojos de pregunta (amarillos)
            "L": "6E7FB0"}   # L: párpados (dormido)
 PET_BODY = [
     "...S..........S...",
@@ -347,14 +355,17 @@ def alive_states(all_states):
     """Estado de cada sesión de Claude que sigue viva en tmux: el chat de este workspace (yo incluido)
     y los agentes de cualquier proyecto. Las que quedaron de ventanas cerradas no cuentan."""
     panes = set(sh("tmux", "list-panes", "-a", "-F", "#{pane_id}").split())
-    return [s.get("state") for s in all_states if s.get("pane") in panes]
+    return [("question" if wait_kind(s) == "question" else "waiting") if s.get("state") == "waiting" else s.get("state")
+            for s in all_states if s.get("pane") in panes]
 
 
 def mascot(W, states):
     """Barrilete según lo que hacen las sesiones: vuela, espera o duerme. Anima con TICK."""
     t = TICK[0]
-    if "waiting" in states:
-        mood, note = "wait", "te espera algo"
+    if "question" in states:
+        mood, note = "ask", "te hizo una pregunta"
+    elif "waiting" in states:
+        mood, note = "wait", "pide permiso"
     elif "working" in states:
         mood, note = "fly", "volando"
     elif "background" in states:
@@ -363,11 +374,13 @@ def mascot(W, states):
         mood, note = "sleep", "durmiendo"
     # Hélices: al girar se ven más cortas (7 → 5 → 1 → 5 píxeles)
     spin = [7, 5, 1, 5]
-    w = spin[t % 4] if mood in ("fly", "wait") else spin[(t // 3) % 4] if mood == "slow" else 7
+    w = spin[t % 4] if mood in ("fly", "wait", "ask") else spin[(t // 3) % 4] if mood == "slow" else 7
     if mood == "sleep":
         a, b = "V", "V"                       # ojos cerrados: los dibujan los párpados (abajo)
     elif mood == "wait":
-        a = b = "X"                           # ojos rojos
+        a = b = "X"                           # ojos rojos: pide permiso
+    elif mood == "ask":
+        a, b = ("Q", "Q") if (t // 2) % 2 else ("Q", "V")   # ojos amarillos que titilan: te pregunta
     elif t % 24 == 0:
         a = b = "V"                           # parpadeo
     else:

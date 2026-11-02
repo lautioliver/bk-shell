@@ -183,6 +183,8 @@ jq --arg state "$STATE" --arg cwd "$CWD" --arg tool "$TOOL_ARG" \
   | (if $ref == "none" then del(.ref) elif $ref != "" then .ref = $ref else . end)
   | (if $model != "" then .model = $model else . end)
   | (if $pane  != "" then .pane  = $pane  else . end)
+  # Qué espera: una respuesta (AskUserQuestion) o un permiso (comando, edición…)
+  | (if .state == "waiting" then .wait = (if .tool == "AskUserQuestion" then "question" else "permission" end) else del(.wait) end)
   | .subagents = (if $reset == 1 then 0 else ((.subagents // 0) + $d) end)
   | (if .subagents < 0 then .subagents = 0 else . end)
 ' "$F" > "$F.tmp" 2>/dev/null && mv "$F.tmp" "$F"

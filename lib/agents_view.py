@@ -143,6 +143,9 @@ def frame(W, H):
             n = room - each * k if k == len(shown) - 1 else each
             s_ = a["state"]
             txt, col = STATE_STYLE.get(s_.get("state"), (s_.get("state") or "", GRAY))
+            if s_.get("state") == "waiting":
+                q = (s_.get("wait") or ("question" if s_.get("tool") == "AskUserQuestion" else "")) == "question"
+                txt = "? te pregunta" if q else "! pide permiso"
             if s_.get("tool") == "confianza":
                 txt, col = "● confiá la carpeta", RED
             busy = s_.get("state") in ("working", "background")

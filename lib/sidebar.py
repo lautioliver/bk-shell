@@ -49,6 +49,8 @@ def pane_state(st, pane, cmd, dead):
     # "working" sin ningún evento del hook en 5 min: probablemente trabado
     if state == "working" and d.get("tool") != "confianza" and time.time() - d.get("ts", time.time()) > 300:
         return "stale"
+    if state == "waiting":
+        return "question" if (d.get("wait") or ("question" if d.get("tool") == "AskUserQuestion" else "")) == "question" else "permission"
     return state
 
 
@@ -137,6 +139,10 @@ def ui(scr):
             elif state == "background":
                 dot, col = "◐◓◑◒"[(tick // 2) % 4], WORK
             elif state == "stale":
+                dot, col = "~", WAIT
+            elif state == "question":
+                dot, col = "?", WAIT
+            elif state == "permission":
                 dot, col = "!", WAIT
             elif state == "waiting":
                 dot, col = "●", WAIT
