@@ -38,7 +38,7 @@ printf 'planner: claude/opus sub\nreviewer: claude/sonnet   # sin modo\nimplemen
 check_eq "$(cd "$P" && "$ROOT/bin/bk" mode planner)" sub "bk mode: el modo del roles.yml del proyecto"
 check_eq "$(cd "$P" && "$ROOT/bin/bk" mode reviewer)" bk "bk mode: sin modo es bk"
 check_eq "$(cd "$P" && "$ROOT/bin/bk" mode implementer)" bk "bk mode: modo seguido de un comentario"
-check_eq "$(cd "$TMP" && "$ROOT/bin/bk" mode orchestrator)" main "bk mode: cae en el roles.yml de bk"
+check_eq "$(cd "$TMP" && "$ROOT/bin/bk" mode orchestrator)" bk "bk mode: fuera de un proyecto, el roles.yml de bk (sin modos) da bk"
 (cd "$P" && "$ROOT/bin/bk" mode no-existe >/dev/null 2>&1); check $(( $? == 0 )) "bk mode: un rol desconocido falla"
 (cd "$P" && "$ROOT/bin/bk" mode '.*' >/dev/null 2>&1); check $(( $? == 0 )) "bk mode: no acepta regex como rol"
 check_eq "$(cd "$P" && "$ROOT/bin/bk" roles | awk '$1 == "planner" {print $2, $3}')" "claude/opus sub" "bk roles: provider/modelo y modo por separado"
