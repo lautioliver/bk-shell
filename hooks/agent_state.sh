@@ -96,6 +96,7 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do mkdir "$LOCK" 2>/dev/null && break; sleep 0.05
 trap 'rmdir "$LOCK" 2>/dev/null' EXIT
 
 [ -s "$F" ] || echo '{"subagents":0,"tool":"-"}' > "$F"
+PREV_STATE=$(jq -r '.state // ""' "$F" 2>/dev/null)
 
 MODEL="${BARRILETE_MODEL:-}"
 if [ -z "$MODEL" ] && [ "$TRANSCRIPT" != "-" ] && [ -f "$TRANSCRIPT" ]; then
@@ -193,5 +194,8 @@ jq --arg state "$STATE" --arg cwd "$CWD" --arg tool "$TOOL_ARG" \
   | (if .subagents < 0 then .subagents = 0 else . end)
 ' "$F" > "$F.tmp" 2>/dev/null && mv "$F.tmp" "$F"
 
+# Sonido por tipo de pedido (terminó, pregunta, permiso, error), solo si el estado cambió
+SOUND="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/agent_sound.sh"
+[ -f "$SOUND" ] && bash "$SOUND" "$PREV_STATE" "$(jq -r '.state // ""' "$F" 2>/dev/null)" "$(jq -r '.wait // ""' "$F" 2>/dev/null)"
 trigger
 exit 0

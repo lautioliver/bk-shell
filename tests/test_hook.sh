@@ -11,7 +11,9 @@ TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 # Aislar del entorno de quien corre los tests (bk lanza agentes con estas variables)
 unset BARRILETE_ROLE BARRILETE_MODEL BARRILETE_ISSUE BARRILETE_PROVIDER TMUX_PANE
 export BK_STATE_DIR="$TMP/state"
-ev() { printf '%s' "$1" | bash "$HOOK"; }
+export BK_SOUND_DRY=1 BK_CONFIG_DIR="$TMP/config"   # los sonidos se imprimen, no suenan
+ev() { printf '%s' "$1" | bash "$HOOK" >/dev/null; }
+snd() { printf '%s' "$1" | bash "$HOOK"; }   # lo que imprime: el sonido (con BK_SOUND_DRY)
 field() { jq -r "$2 // \"-\"" "$BK_STATE_DIR/$1.json" 2>/dev/null; }
 
 bash -n "$HOOK"; check $? "el hook no tiene errores de sintaxis"
@@ -62,5 +64,19 @@ check_eq "$out" "rc=0" "una entrada inválida no frena a Claude"
 
 ev '{"session_id":"s1","hook_event_name":"SessionEnd","cwd":"/tmp/p"}'
 [ ! -e "$BK_STATE_DIR/s1.json" ]; check $? "SessionEnd borra el estado"
+
+
+# Sonidos: uno por tipo de pedido, solo cuando cambia el estado
+check_eq "$(snd '{"session_id":"s9","hook_event_name":"UserPromptSubmit","cwd":"/tmp/p"}')" "" "trabajar no suena"
+check_eq "$(snd '{"session_id":"s9","hook_event_name":"Stop","cwd":"/tmp/p"}')" done "terminar suena 'done'"
+check_eq "$(snd '{"session_id":"s9","hook_event_name":"Stop","cwd":"/tmp/p"}')" "" "un segundo Stop no repite el sonido"
+ev '{"session_id":"s9","hook_event_name":"UserPromptSubmit","cwd":"/tmp/p"}'
+check_eq "$(snd '{"session_id":"s9","hook_event_name":"PermissionRequest","tool_name":"Bash","cwd":"/tmp/p"}')" permission "pedir permiso suena 'permission'"
+ev '{"session_id":"s9","hook_event_name":"PostToolUse","tool_name":"Bash","cwd":"/tmp/p"}'
+check_eq "$(snd '{"session_id":"s9","hook_event_name":"PermissionRequest","tool_name":"AskUserQuestion","cwd":"/tmp/p"}')" question "un cuestionario suena 'question'"
+check_eq "$(snd '{"session_id":"s9","hook_event_name":"StopFailure","cwd":"/tmp/p"}')" error "un error suena 'error'"
+mkdir -p "$TMP/config"; echo off > "$TMP/config/sound"
+ev '{"session_id":"s9","hook_event_name":"UserPromptSubmit","cwd":"/tmp/p"}'
+check_eq "$(snd '{"session_id":"s9","hook_event_name":"Stop","cwd":"/tmp/p"}')" "" "con bk sound off no suena"
 
 finish

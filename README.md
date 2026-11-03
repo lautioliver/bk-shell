@@ -41,8 +41,11 @@ quedó sin commitear, en una sola sesión de tmux.
 - **Chats por rama**: `bk chat --rama <nombre>` (o `alt+n` → *Chat en una rama aparte*) crea `../<repo>-wt/chat-<nombre>`
   en la rama `chat/<nombre>`, desde la rama principal de `origin`, y lo abre como workspace `bk-<proyecto>-<nombre>`.
   Varios cambios del mismo proyecto a la vez sin pisarse; si ya existe, lo reusa.
-- **Terminal rápida**: `alt+x` abre una terminal del proyecto flotando sobre el workspace (sesión `term-<proyecto>`,
-  la del repo principal aunque estés en un worktree); `alt+x` de nuevo la esconde y vuelve como la dejaste. `bk term`.
+- **Terminal rápida**: `alt+x` abre una terminal del proyecto flotando sobre el workspace (una sesión `term-<proyecto>`
+  por repo, que arranca en la carpeta desde donde la abriste); `alt+x` de nuevo la esconde y vuelve como la dejaste. `bk term`.
+- **Sonidos**: un sonido por tipo de pedido de los agentes, no por agente: terminó, te pregunta, pide permiso, error
+  (en macOS, Glass · Ping · Purr · Basso; en Linux, los de freedesktop si hay `paplay` o `pw-play`). Suena solo cuando
+  cambia el estado. `bk sound off` lo apaga, `bk sound test` los hace sonar.
 - **Subagentes a la vista**: los subagentes vivos de un chat o agente (herramienta Agent) aparecen como `└` debajo de él
   en la tira y con su descripción en el riel. Clic en el `└` (o `bk sub`) sigue su sesión en vivo, de solo lectura.
 - **Overlays**: `alt+a` agentes en vivo · `alt+g` cambios (worktrees y diff) · `alt+k` comandos · `alt+s` sesiones
@@ -84,6 +87,7 @@ bk review 57       # un reviewer sobre el PR #57
 bk s               # todas tus sesiones de Claude, para saltar o retomar
 bk chat --rama login  # otro chat del proyecto en su worktree y rama (chat/login)
 bk sub             # los subagentes vivos, para seguir uno en vivo
+bk sound off       # sin sonidos (on, test)
 bk help            # todo lo demás
 ```
 
