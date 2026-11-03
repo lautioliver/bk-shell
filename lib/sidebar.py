@@ -229,7 +229,13 @@ def ui(scr):
     me = os.environ.get("TMUX_PANE", "")
     client = sh("tmux", "display-message", "-p", "-t", me, "#{client_name}").strip() if me else ""
     hover_y, hover_t, tips = -1, 0.0, {}
-    for k, v in {1: 222, 2: 210, 3: 244, 4: 218, 5: 147}.items():
+    try:   # de día, tonos oscuros y apagados (los de noche son pastel y sobre fondo claro gritan)
+        from gentle import is_day
+        day = is_day()
+    except Exception:
+        day = False
+    colors = {1: 137, 2: 131, 3: 243, 4: 132, 5: 60} if day else {1: 222, 2: 210, 3: 244, 4: 218, 5: 147}
+    for k, v in colors.items():
         curses.init_pair(k, v, -1)
     WORK, WAIT, MUTED, ROSE, IRIS = (curses.color_pair(i) for i in range(1, 6))
 
