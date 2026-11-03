@@ -52,6 +52,7 @@ uso: bk [comando] [--dry-run]
                     agente que nadie esté mirando; --all: todos en un panel, como en el workspace)
   stop <ventana>    cerrar la ventana del agente (el worktree queda)
   roles             qué provider/modelo corre cada rol en este proyecto, y su modo
+  sound [on|off|test]  sonido por tipo de pedido de los agentes: terminó, pregunta, permiso, error
   mode <rol>        cómo lo lanza el orquestador: main (la sesión principal), bk (ventana propia) o
                     sub (subagente); 3.ª columna de roles.yml, bk si no tiene
   sub [transcript]  ver en vivo un subagente, solo lectura (sin argumento: elegir de los vivos); también
@@ -120,7 +121,8 @@ ws_term() {
     *) top=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null || true); top=${top:-$dir} ;;
   esac
   name="term-$(basename "$top" | tr -c 'A-Za-z0-9_\n-' '_')"
-  tmux has-session -t "=$name" 2>/dev/null || tmux new-session -d -s "$name" -c "$top"
+  # Una sesión por repo, pero arranca en la carpeta desde donde la abriste (p. ej. el worktree)
+  tmux has-session -t "=$name" 2>/dev/null || tmux new-session -d -s "$name" -c "$dir"
   tmux set-option -t "=$name" status off >/dev/null 2>&1 || true
   exec env -u TMUX tmux attach -t "=$name"
 }
@@ -685,6 +687,22 @@ ls_agents() {
 
 # role_mode <rol> [raíz] -> main | bk | sub: cómo lo lanza el orquestador (3.ª columna de roles.yml).
 # Igual que role_spec: primero el roles.yml del proyecto y, si el rol no está ahí, el de bk. Sin modo: bk.
+# bk sound [on|off|test|status]: un sonido por tipo de pedido de los agentes (lo toca el hook de estado)
+cmd_sound() {
+  local f="${BK_CONFIG_DIR:-$HOME/.config/bk}/sound" c
+  case "$1" in
+    on)     mkdir -p "$(dirname "$f")"; echo on >"$f"; info "sonidos prendidos" ;;
+    off)    mkdir -p "$(dirname "$f")"; echo off >"$f"; info "sonidos apagados" ;;
+    test)   for c in "working done" "working waiting question" "working waiting permission" "working error"; do
+              # shellcheck disable=SC2086
+              set -- $c; printf '  %s\n' "$(BK_SOUND_DRY=1 bash "$WS/lib/agent_sound.sh" "$@")"
+              bash "$WS/lib/agent_sound.sh" "$@"; sleep 1.2
+            done ;;
+    status) if [ "$(cat "$f" 2>/dev/null)" = off ]; then echo apagados; else echo prendidos; fi ;;
+    *) die "bk sound [on|off|test]" ;;
+  esac
+}
+
 role_mode() {
   local role="$1" root="${2:-}" f mode="" found=0
   # El rol va dentro de una regex: solo nombres de rol, nada que sed o grep interpreten
@@ -819,6 +837,7 @@ case "${1:-}" in
   sidebar)     exec python3 "$WS/lib/sidebar.py" ;;
   term|t)      shift; ws_term "${1:-$PWD}" ;;
   sub)         shift; exec python3 "$WS/lib/subwatch.py" "$@" ;;
+  sound)       shift; cmd_sound "${1:-status}" ;;
   _nth)        tmux list-sessions -F '#{session_created} #{session_name}' 2>/dev/null \
                  | awk '$2 ~ /^bk/' | sort -n | awk -v n="${2:-1}" 'NR == n {print $2}' ;;
   changes)     exec python3 "$WS/lib/changes.py" ;;
