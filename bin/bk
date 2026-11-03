@@ -9,6 +9,13 @@ SESSION="${BK_SESSION:-agents}"
 STATE_DIR="${BK_STATE_DIR:-$HOME/.cache/bk/agents}"
 DRY=0
 
+# Los atajos de tmux pasan BK_FROM/BK_CLIENT a los popups, pero el comando de display-popup no
+# expande #{…}: llegan literales. Sin un valor real, tomarlos del cliente de tmux actual.
+if [ -n "${TMUX:-}" ]; then
+  case "${BK_FROM:-}" in *'#{'*) BK_FROM=$(tmux display-message -p '#{session_name}' 2>/dev/null || true); export BK_FROM ;; esac
+  case "${BK_CLIENT:-}" in *'#{'*) BK_CLIENT=$(tmux display-message -p '#{client_name}' 2>/dev/null || true); export BK_CLIENT ;; esac
+fi
+
 die()  { printf 'bk: %s\n' "$*" >&2; exit 1; }
 info() { printf '\033[2m%s\033[0m\n' "$*"; }
 
