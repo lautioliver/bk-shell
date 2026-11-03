@@ -511,14 +511,15 @@ cmd_open() {
   fi
   # Un workspace ya abierto con ese nombre (bk-<q>, o el único que lo contenga): conectarse a ese
   local sess
-  sess=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -x "bk-$q" \
-         || tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^bk-' | grep -i -- "$q")
+  # || true: sin coincidencias el grep falla y, con pipefail, cortaría el script sin decir nada
+  sess=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -xF -- "bk-$q" \
+         || tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^bk-' | grep -iF -- "$q" || true)
   if [ -n "$sess" ] && [ "$(wc -l <<<"$sess")" -eq 1 ]; then
     if [ -n "${TMUX:-}" ]; then tmux switch-client ${BK_CLIENT:+-c "$BK_CLIENT"} -t "$sess"; else
       new_window "tmux attach -t $sess"; fi
     info "→ $sess"; return
   fi
-  local dir; dir=$(resolve_project "$q"); [ -n "$dir" ] || die "no encuentro el proyecto '$q' (pasá la ruta, o bk open para ver los abiertos)"
+  local dir; dir=$(resolve_project "$q" || true); [ -n "$dir" ] || die "no encuentro el proyecto '$q' (pasá la ruta, o bk open para ver los abiertos)"
   new_window "cd '$dir' && bk ws"
   info "abriendo $(project_of "$dir") en una ventana nueva → $dir"
 }
@@ -588,11 +589,17 @@ stop() {
   need_tmux
   local win="${1:?bk stop <ventana>}" panes
   has_window "$win" || die "no existe la ventana '$win'"
+  # Si el agente está de visita en un workspace (alt+shift+N), en esta ventana quedó el chat de ese
+  # workspace: devolverlo a su lugar antes de cerrar, para no matarlo. || true: sin chat de visita el
+  # grep no encuentra nada y, con pipefail, cortaría el script en silencio.
+  local ws
+  ws=$(tmux list-panes -t "$SESSION:$win" -F '#{@bk_ws}' | grep -m1 . || true)
+  [ -n "$ws" ] && ws_agent "$ws" 0
   panes=$(tmux list-panes -t "$SESSION:$win" -F '#{pane_id}')
   tmux kill-window -t "$SESSION:$win"
   # Matar el pane no siempre dispara SessionEnd: limpiar el estado de la barra a mano
   for p in $panes; do
-    grep -l "\"pane\": *\"$p\"" "$STATE_DIR"/*.json 2>/dev/null | xargs rm -f
+    { grep -l "\"pane\": *\"$p\"" "$STATE_DIR"/*.json 2>/dev/null || true; } | xargs rm -f
   done
   sketchybar --trigger agent_update >/dev/null 2>&1 || true
   info "cerrada $win (el worktree, si había, queda: cleanup.sh lo limpia cuando el issue cierre)"
