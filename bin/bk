@@ -145,6 +145,10 @@ launch() {
     pane=$(tmux new-window -d -P -F '#{pane_id}' -t "$SESSION:" -n "$win" -c "$dir" "${env[@]}" "$full")
   else
     pane=$(tmux new-session -d -P -F '#{pane_id}' -s "$SESSION" -n "$win" -c "$dir" "${env[@]}" "$full")
+    # new-session -e también graba las variables en la sesión, y las heredarían todas las ventanas
+    # siguientes (otro agente quedaba con el rol o el issue de este). Son solo de este pane.
+    local kv
+    for kv in "${env[@]}"; do [ "$kv" = -e ] || tmux set-environment -u -t "$SESSION" "${kv%%=*}" 2>/dev/null || true; done
   fi
   # La ventana queda abierta si el agente termina, para leer lo último
   tmux set-option -w -t "$SESSION:$win" remain-on-exit on >/dev/null
