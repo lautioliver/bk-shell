@@ -31,4 +31,28 @@ check_eq "$(jq -c .hooks "$H/.claude/settings.json")" "{}" "desinstalar saca el 
 grep -q 'bk-shell' "$H/.tmux.conf"; [ $? -ne 0 ]; check $? "desinstalar saca bk.conf de tmux.conf"
 [ "$(jq -r .theme "$H/.claude/settings.json")" = dark ]; check $? "no toca el resto de settings.json"
 
+# bk chat --rama: sin nombre, con un nombre en blanco o fuera de un repo git falla con un mensaje claro y no
+# crea nada (ni worktree, ni rama, ni sesión). tmux en un servidor propio (TMUX_TMPDIR), nunca el tuyo.
+if command -v tmux >/dev/null; then
+  T="$TMP/tmux"; mkdir -p "$T" "$TMP/nogit"
+  git init -q -b main "$TMP/repo" && git -C "$TMP/repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+  bkt() { env -u TMUX TMUX_TMPDIR="$T" BK_SESSION="bk-test-agents-$$" BK_CLIENT=nocliente BK_STATE_DIR="$TMP/state" "$ROOT/bin/bk" "$@"; }
+  sess="zz-bk-test-$$"
+  TMUX_TMPDIR="$T" tmux -f /dev/null new-session -d -s "$sess" "sleep 300"
+  nsess() { TMUX_TMPDIR="$T" tmux list-sessions 2>/dev/null | wc -l | tr -d ' '; }
+  before=$(nsess)
+  out=$(cd "$TMP/repo" && bkt chat --rama 2>&1 </dev/null); rc=$?
+  [ $rc -ne 0 ] && grep -q 'bk chat --rama <nombre' <<<"$out"; check $? "chat --rama sin nombre falla con el uso"
+  out=$(cd "$TMP/repo" && bkt chat --rama "   " "$sess" 2>&1 </dev/null); rc=$?
+  [ $rc -ne 0 ] && grep -q 'bk chat --rama <nombre' <<<"$out"; check $? "chat --rama con nombre en blanco falla"
+  out=$(cd "$TMP/repo" && bkt chat --rama "¡¿~~?!" "$sess" 2>&1 </dev/null); rc=$?
+  [ $rc -ne 0 ] && grep -q 'no deja un nombre de rama' <<<"$out"; check $? "chat --rama con un nombre sin letras ni números falla"
+  out=$(cd "$TMP/nogit" && bkt chat --rama algo "$sess" 2>&1 </dev/null); rc=$?
+  [ $rc -ne 0 ] && grep -q 'necesita un repo git' <<<"$out"; check $? "chat --rama fuera de un repo git falla"
+  check_eq "$(git -C "$TMP/repo" branch --list 'chat/*')" "" "chat --rama fallido no crea ramas"
+  [ ! -e "$TMP/repo-wt" ] && [ ! -e "$TMP/nogit-wt" ]; check $? "chat --rama fallido no crea worktrees"
+  check_eq "$(nsess)" "$before" "chat --rama fallido no crea sesiones de tmux"
+  TMUX_TMPDIR="$T" tmux kill-session -t "=$sess" 2>/dev/null
+fi
+
 finish

@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """bk new (alt+n, o el + de la tira): crear sin salir del workspace.
 
-  ✿ Chat nuevo en <proyecto>     un claude nuevo en la carpeta del proyecto, en el lugar del chat
+  ✿ Chat nuevo en <proyecto>     otro chat del proyecto: un workspace más en la tira (2, 3…)
+  ✿ Chat en una rama aparte      un workspace más, en su propio worktree y rama (chat/<nombre>): varios cambios
+                                 del mismo proyecto a la vez sin pisarse
   ✿ Chat sin proyecto            un claude en ~/.bk/chats, para preguntas sueltas
   ─ Abrir workspace de otro proyecto
     barrilete-kit      abierto   ir a ese workspace
@@ -89,9 +91,12 @@ def ui(scr):
     items = []
     if here_proj:
         items.append(("chat", here_proj, f"✿ Chat nuevo en {os.path.basename(here_proj)}"))
+        if os.path.exists(os.path.join(here_proj, ".git")):
+            items.append(("branch", here_proj, f"✿ Chat en una rama aparte en {os.path.basename(here_proj)}"))
     items.append(("loose", "", "✿ Chat sin proyecto"))
     items += [("ws", p, p) for p in projs]
     sel, typing, path = 0, False, ""
+    naming = False  # escribiendo el nombre de la rama aparte
     while True:
         H, W = scr.getmaxyx()
         scr.erase()
@@ -111,7 +116,7 @@ def ui(scr):
                 if y >= H - 2:
                     break
             attr = curses.A_REVERSE if i == sel and not typing else 0
-            if kind in ("chat", "loose"):
+            if kind in ("chat", "branch", "loose"):
                 scr.addnstr(y, 2, label, W - 3, attr | ROSE | curses.A_BOLD)
             else:
                 name = os.path.basename(p)
@@ -121,7 +126,7 @@ def ui(scr):
                 scr.addnstr(y, 2, line, W - 3, attr | (IRIS if tag else 0))
             y += 1
         if typing:
-            scr.addnstr(H - 2, 1, "ruta › " + path, W - 2, PETAL)
+            scr.addnstr(H - 2, 1, ("nombre del cambio › " if naming else "ruta › ") + path, W - 2, PETAL)
             hint = "enter abrir · esc volver"
         else:
             hint = "↑↓ elegir · enter abrir · / escribir una ruta · esc cerrar"
@@ -130,7 +135,10 @@ def ui(scr):
         k = scr.get_wch()
         if typing:
             if k == "\x1b":
-                typing, path = False, ""
+                typing, naming, path = False, False, ""
+            elif k in ("\n", curses.KEY_ENTER) and naming:
+                if path.strip():
+                    return ("branch", path.strip())
             elif k in ("\n", curses.KEY_ENTER):
                 d = os.path.expanduser(path.strip())
                 if os.path.isdir(d):
@@ -150,6 +158,9 @@ def ui(scr):
             typing = True
         elif k in ("\n", curses.KEY_ENTER) and items:
             kind, p, _ = items[sel]
+            if kind == "branch":  # primero el nombre del cambio
+                typing, naming, path = True, True, ""
+                continue
             return (kind, p)
 
 
@@ -161,6 +172,13 @@ def main():
     env = dict(os.environ)
     if kind == "chat":
         subprocess.run([BK, "chat", os.environ.get("BK_FROM", "")], env=env)
+    elif kind == "branch":
+        r = subprocess.run([BK, "chat", "--rama", path, os.environ.get("BK_FROM", "")], env=env)
+        if r.returncode != 0:  # el popup se cerraría y el error de bk no se llegaría a leer
+            try:
+                input("\n(enter cierra)")
+            except (EOFError, KeyboardInterrupt):
+                pass
     elif kind == "loose":
         subprocess.run([BK, "chat", "--suelto", os.environ.get("BK_FROM", "")], env=env)
     else:

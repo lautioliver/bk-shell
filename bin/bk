@@ -27,7 +27,9 @@ uso: bk [comando] [--dry-run]
                     si ya existe, vuelve a ella). Uno por proyecto, cada uno en su escritorio
   rerun [--go] [pr…]  volver a correr los checks de Actions que fallaron (sin --go: solo muestra)
   new | n           popup "Nuevo": chat nuevo en este proyecto u otro workspace (alt+n, o + en la tira)
-  chat [--suelto]   un claude nuevo en el proyecto del workspace (o sin proyecto), en el lugar del chat (alt+q vuelve)
+  chat [--suelto]   otro chat del proyecto, como un workspace más en la tira (alt+N); --suelto: sin
+                    proyecto, en el lugar del chat (alt+q vuelve)
+  chat --rama N     otro chat en su propio worktree y rama chat/N (desde la rama principal); si existe, lo reusa
   open [proyecto]   abrir el workspace de otro proyecto en una ventana nueva (sin argumento: los abiertos)
   plan "<idea>"     planner: /plan-feature en la raíz del proyecto
   run <issue>       routing.py elige el rol → prepare.sh crea worktree → implementer en tmux
@@ -441,19 +443,68 @@ new_window() {
   fi
 }
 
-# bk chat [sesión]: un claude nuevo en la carpeta del proyecto del workspace. Vive en la sesión
-# "agents" (aparece en la tira) y se trae al lugar del chat; alt+q vuelve al orquestador.
+# bk chat [--suelto | --rama <nombre>] [sesión]
+#   (sin opción)  otro chat del proyecto del workspace: un workspace más en la tira (bk-<proyecto>-2, -3…),
+#                 no reemplaza al actual
+#   --rama N      un workspace en su propio worktree (../<repo>-wt/chat-<n>) y rama chat/<n>, creada desde
+#                 la rama principal de origin: varios cambios del mismo proyecto a la vez sin pisarse.
+#                 Si ya existe, lo reusa
+#   --suelto      un claude sin proyecto (~/.bk/chats) en la sesión "agents", traído al lugar del chat
 cmd_chat() {
   set +euo pipefail
-  local loose=0; [ "${1:-}" = "--suelto" ] && { loose=1; shift; }
+  local loose=0 branch="" want_branch=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --suelto) loose=1; shift ;;
+      --rama) want_branch=1; branch="${2:-}"; if [ $# -ge 2 ]; then shift 2; else shift; fi ;;
+      *) break ;;
+    esac
+  done
   local s="${1:-$(tmux display-message -p '#{session_name}' 2>/dev/null)}" top name n pane
-  if [ "$loose" = 1 ]; then
-    # Chat sin proyecto: en una carpeta propia (~/.bk/chats), así Claude no lee tu home ni pide confiar en ella
-    top="$HOME/.bk/chats"; mkdir -p "$top"; name="c-suelto"
-  else
+  if [ "$want_branch" = 1 ] && [ "$loose" = 0 ]; then
+    # Todo se valida antes de crear nada (worktree, rama o sesión)
+    [ -n "${branch//[[:space:]]/}" ] || die "bk chat --rama <nombre del cambio>"
     top=$(tmux show-environment -t "$s" BK_PROJECT 2>/dev/null | sed -n 's/^BK_PROJECT=//p')
-    top="${top:-$PWD}"; name="c-$(basename "$top" | cut -c1-10)"
+    top="${top:-$PWD}"
+    git -C "$top" rev-parse --show-toplevel >/dev/null 2>&1 || die "una rama aparte necesita un repo git ($top no es uno)"
+    top=$(project_top "$top")   # el repo principal, aunque el chat actual ya esté en un worktree
+    local slug wt base
+    # Sin acentos (ñ → n): iconv puede salir con error aunque haya convertido todo, así que se usa lo que
+    # devolvió y, solo si no devolvió nada, el nombre tal cual. Los ~ ' ^ que deja la transliteración, fuera.
+    slug=$(printf '%s' "$branch" | iconv -f utf-8 -t ascii//TRANSLIT 2>/dev/null)
+    [ -n "$slug" ] || slug=$branch
+    slug=$(printf '%s' "$slug" | tr -d "~'^\`\"" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' \
+           | cut -c1-30 | sed 's/^-*//; s/-*$//')
+    [ -n "$slug" ] || die "el nombre '$branch' no deja un nombre de rama válido (usá letras o números)"
+    wt="$(dirname "$top")/$(basename "$top")-wt/chat-$slug"
+    if [ ! -d "$wt" ]; then
+      git -C "$top" fetch -q origin 2>/dev/null
+      base=$(git -C "$top" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || echo HEAD)
+      if git -C "$top" show-ref -q --verify "refs/heads/chat/$slug"; then
+        git -C "$top" worktree add -q "$wt" "chat/$slug" || die "no pude crear el worktree $wt"
+      else
+        git -C "$top" worktree add -q -b "chat/$slug" "$wt" "$base" || die "no pude crear el worktree $wt"
+      fi
+      info "rama chat/$slug desde $base · $wt"
+    fi
+    # Un workspace propio (otro número en la tira, alt+N): bk-<proyecto>-<nombre>; si ya está, vuelve a él
+    WS_SESSION="bk-$(project_of "$top")-$slug"
+    workspace "$wt"
+    return
+  elif [ "$want_branch" = 1 ]; then
+    die "--rama y --suelto no van juntos"
+  elif [ "$loose" = 0 ]; then
+    # Otro chat en la carpeta del proyecto: un workspace más (bk-<proyecto>-2, -3…), no reemplaza al actual
+    top=$(tmux show-environment -t "$s" BK_PROJECT 2>/dev/null | sed -n 's/^BK_PROJECT=//p')
+    top="${top:-$PWD}"
+    local wsbase k=2; wsbase="bk-$(project_of "$top")"
+    while tmux has-session -t "=$wsbase-$k" 2>/dev/null; do k=$((k + 1)); done
+    WS_SESSION="$wsbase-$k"
+    workspace "$top"
+    return
   fi
+  # Chat sin proyecto: en una carpeta propia (~/.bk/chats), así Claude no lee tu home ni pide confiar en ella
+  top="$HOME/.bk/chats"; mkdir -p "$top"; name="c-suelto"
   n=1; while has_window "$name$([ $n -gt 1 ] && echo "-$n")"; do n=$((n + 1)); done
   [ $n -gt 1 ] && name="$name-$n"
   if tmux has-session -t "$SESSION" 2>/dev/null; then
