@@ -1,12 +1,18 @@
 # Qué provider/modelo corre cada rol de Barrilete Kit.
-# Formato: <rol>: <provider>/<modelo>
+# Formato: <rol>: <provider>/<modelo> [modo]
 #   provider: claude (Claude Code)  |  codex (Codex CLI, todavía sin probar)
 #   modelo:   lo que acepte el CLI (claude: haiku, sonnet, opus o un id completo)
+#   modo:     cómo lo lanza el orquestador (bk mode <rol>):
+#               main  la sesión principal (no se lanza)
+#               bk    agente propio en una ventana de tmux: te puede preguntar en el momento
+#               sub   subagente del orquestador (herramienta Agent): devuelve su resultado al orquestador
+#             Criterio: bk para los roles que pueden necesitar una decisión tuya (business-logic, ADR, CI);
+#             sub para los que solo devuelven un resultado. Sin modo: bk.
 #
 # bk busca primero <proyecto>/.barrilete/roles.yml y, rol por rol, cae en este archivo.
 
-planner: claude/opus
-orchestrator: claude/opus
-implementer: claude/sonnet
-implementer-light: claude/haiku
-reviewer: claude/opus
+planner: claude/opus main
+orchestrator: claude/opus main
+implementer: claude/sonnet bk
+implementer-light: claude/haiku sub
+reviewer: claude/opus sub

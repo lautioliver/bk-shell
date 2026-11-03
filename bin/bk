@@ -51,7 +51,9 @@ uso: bk [comando] [--dry-run]
   watch [ventana]   pantalla de un agente en vivo, solo lectura (sin ventana: toma el próximo
                     agente que nadie esté mirando; --all: todos en un panel, como en el workspace)
   stop <ventana>    cerrar la ventana del agente (el worktree queda)
-  roles             qué provider/modelo corre cada rol en este proyecto
+  roles             qué provider/modelo corre cada rol en este proyecto, y su modo
+  mode <rol>        cómo lo lanza el orquestador: main (la sesión principal), bk (ventana propia) o
+                    sub (subagente); 3.ª columna de roles.yml, bk si no tiene
   term [dir]        terminal rápida del proyecto, persistente (alt+x la muestra y la esconde)
   tokens            tokens del día y costo equivalente en API, por modelo y proyecto
 
@@ -679,10 +681,27 @@ ls_agents() {
   | { printf 'VENTANA\tPROYECTO\tREF\tROL\tMODELO\tESTADO\tHACE\n'; cat; } | column -t -s $'\t'
 }
 
+# role_mode <rol> [raíz] -> main | bk | sub: cómo lo lanza el orquestador (3.ª columna de roles.yml).
+# Igual que role_spec: primero el roles.yml del proyecto y, si el rol no está ahí, el de bk. Sin modo: bk.
+role_mode() {
+  local role="$1" root="${2:-}" f mode="" found=0
+  # El rol va dentro de una regex: solo nombres de rol, nada que sed o grep interpreten
+  [[ "$role" =~ ^[A-Za-z0-9_-]+$ ]] || die "rol inválido: '$role'"
+  for f in ${root:+"$root/.barrilete/roles.yml"} "$WS/roles.yml"; do
+    [ -f "$f" ] || continue
+    grep -qE "^[[:space:]]*${role}:" "$f" || continue
+    found=1
+    mode=$(sed -nE "s/^[[:space:]]*${role}:[[:space:]]*[^#[:space:]]+[[:space:]]+(main|bk|sub)([[:space:]#].*)?$/\1/p" "$f" | head -1)
+    break
+  done
+  [ "$found" = 1 ] || die "el rol '$role' no está en roles.yml"
+  printf '%s' "${mode:-bk}"
+}
+
 roles() {
   local root; root=$(git rev-parse --show-toplevel 2>/dev/null || true)
   for r in planner orchestrator implementer implementer-light reviewer; do
-    printf '%-18s %s\n' "$r" "$(role_spec "$r" "$root")"
+    printf '%-18s %-16s %s\n' "$r" "$(role_spec "$r" "$root")" "$(role_mode "$r" "$root")"
   done
 }
 
@@ -787,6 +806,8 @@ case "${1:-}" in
   watch)       shift; watch "${1:-}" ;;
   stop)        shift; stop "${1:-}" ;;
   roles)       roles ;;
+  mode)        shift; [ -n "${1:-}" ] || die "bk mode <rol>"
+               role_mode "$1" "$(git rev-parse --show-toplevel 2>/dev/null || true)"; echo ;;
   tokens)      exec python3 "$WS/lib/usage.py" ;;
   ""|ws)       shift || true; workspace "${1:-}" ;;
   open)        shift; cmd_open "${1:-}" ;;

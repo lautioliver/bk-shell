@@ -31,6 +31,18 @@ check_eq "$(jq -c .hooks "$H/.claude/settings.json")" "{}" "desinstalar saca el 
 grep -q 'bk-shell' "$H/.tmux.conf"; [ $? -ne 0 ]; check $? "desinstalar saca bk.conf de tmux.conf"
 [ "$(jq -r .theme "$H/.claude/settings.json")" = dark ]; check $? "no toca el resto de settings.json"
 
+# bk mode <rol>: la 3.ª columna de roles.yml (el del proyecto manda), bk si no tiene; un rol que no existe falla.
+# role_spec sigue devolviendo solo provider/modelo.
+P="$TMP/proj"; mkdir -p "$P/.barrilete"; git init -q "$P"
+printf 'planner: claude/opus sub\nreviewer: claude/sonnet   # sin modo\nimplementer: codex/gpt-5 bk # comentario\n' >"$P/.barrilete/roles.yml"
+check_eq "$(cd "$P" && "$ROOT/bin/bk" mode planner)" sub "bk mode: el modo del roles.yml del proyecto"
+check_eq "$(cd "$P" && "$ROOT/bin/bk" mode reviewer)" bk "bk mode: sin modo es bk"
+check_eq "$(cd "$P" && "$ROOT/bin/bk" mode implementer)" bk "bk mode: modo seguido de un comentario"
+check_eq "$(cd "$TMP" && "$ROOT/bin/bk" mode orchestrator)" main "bk mode: cae en el roles.yml de bk"
+(cd "$P" && "$ROOT/bin/bk" mode no-existe >/dev/null 2>&1); check $(( $? == 0 )) "bk mode: un rol desconocido falla"
+(cd "$P" && "$ROOT/bin/bk" mode '.*' >/dev/null 2>&1); check $(( $? == 0 )) "bk mode: no acepta regex como rol"
+check_eq "$(cd "$P" && "$ROOT/bin/bk" roles | awk '$1 == "planner" {print $2, $3}')" "claude/opus sub" "bk roles: provider/modelo y modo por separado"
+
 # bk chat --rama: sin nombre, con un nombre en blanco o fuera de un repo git falla con un mensaje claro y no
 # crea nada (ni worktree, ni rama, ni sesión). tmux en un servidor propio (TMUX_TMPDIR), nunca el tuyo.
 if command -v tmux >/dev/null; then
