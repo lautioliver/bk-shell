@@ -32,8 +32,19 @@ quedó sin commitear, en una sola sesión de tmux.
   `bk open <proyecto>` abre otro en una ventana nueva; cada escritorio puede tener el suyo.
 - **Agentes de Barrilete Kit en paralelo**: `bk run <issue>`, `bk review <pr>`, `bk fix <pr> "…"`, `bk plan "…"`,
   cada uno en su ventana y su worktree, con el modelo que diga `roles.yml`.
+- **Modos por rol**: la tercera columna de `roles.yml` dice cómo lanza el orquestador cada rol: `main` (la sesión
+  principal), `bk` (ventana propia, te puede preguntar en el momento) o `sub` (subagente que le devuelve el resultado).
+  Sin modo es `bk`. `bk mode <rol>` lo muestra; `bk roles`, todos.
 - **Hablarles sin entrar**: `bk say <agente> "…"`, `bk peek <agente>`, o `alt+shift+N` para traer el agente N al lugar del chat.
-- **Nuevo sin salir**: `alt+n` (o el `+` de la tira) abre un chat nuevo en el proyecto o el workspace de otro proyecto.
+- **Nuevo sin salir**: `alt+n` (o el `+` de la tira) abre otro chat del proyecto (un workspace más en la tira,
+  `bk-<proyecto>-2`, `-3`…), un chat en una rama aparte o el workspace de otro proyecto.
+- **Chats por rama**: `bk chat --rama <nombre>` (o `alt+n` → *Chat en una rama aparte*) crea `../<repo>-wt/chat-<nombre>`
+  en la rama `chat/<nombre>`, desde la rama principal de `origin`, y lo abre como workspace `bk-<proyecto>-<nombre>`.
+  Varios cambios del mismo proyecto a la vez sin pisarse; si ya existe, lo reusa.
+- **Terminal rápida**: `alt+x` abre una terminal del proyecto flotando sobre el workspace (sesión `term-<proyecto>`,
+  la del repo principal aunque estés en un worktree); `alt+x` de nuevo la esconde y vuelve como la dejaste. `bk term`.
+- **Subagentes a la vista**: los subagentes vivos de un chat o agente (herramienta Agent) aparecen como `└` debajo de él
+  en la tira y con su descripción en el riel. Clic en el `└` (o `bk sub`) sigue su sesión en vivo, de solo lectura.
 - **Overlays**: `alt+a` agentes en vivo · `alt+g` cambios (worktrees y diff) · `alt+k` comandos · `alt+s` sesiones
   de Claude (abiertas y recientes, retomables) · `alt+u` estadísticas · `alt+,` estilo.
 - **Estado real de cada agente**: trabajando, te espera (permiso, confianza en la carpeta, plan por aprobar),
@@ -71,6 +82,8 @@ bk                 # abre (o retoma) el workspace del proyecto
 bk run 42          # un implementer sobre el issue #42 (proyecto con Barrilete Kit)
 bk review 57       # un reviewer sobre el PR #57
 bk s               # todas tus sesiones de Claude, para saltar o retomar
+bk chat --rama login  # otro chat del proyecto en su worktree y rama (chat/login)
+bk sub             # los subagentes vivos, para seguir uno en vivo
 bk help            # todo lo demás
 ```
 
@@ -80,7 +93,10 @@ bk help            # todo lo demás
 | `alt+shift+1…9` | traer el agente N al lugar del chat (`alt+q` lo devuelve) |
 | `alt+0` | volver a la sesión anterior |
 | `alt+a` · `alt+g` · `alt+k` · `alt+s` · `alt+u` · `alt+,` | agentes · cambios · comandos · sesiones · stats · estilo |
-| clic en la tira | workspace: ir · agente: verlo en vivo (`q` cierra, `enter` va a su ventana) |
+| `alt+n` | nuevo: otro chat del proyecto, un chat en una rama aparte o el workspace de otro proyecto |
+| `alt+x` | terminal rápida del proyecto (`alt+x` la esconde) |
+| clic en la tira | workspace: ir · agente: verlo en vivo (`q` cierra, `enter` va a su ventana) · `└` subagente: seguirlo en vivo |
+| mouse sobre la tira | el nombre de la fila (workspace o agente N · proyecto · feature) en la barra de tmux |
 
 ## Cómo funciona
 
