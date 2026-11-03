@@ -20,6 +20,7 @@ ENTRIES = [
     ("Vistas", "Agentes en vivo", "watch --all", None, "view"),
     ("Vistas", "Cambios sin commitear", "changes", None, "view"),
     ("Vistas", "Terminal rápida (alt+x)", "term", None, "view"),
+    ("Vistas", "Ver un subagente en vivo", "sub", None, "view"),
     ("Vistas", "Sesiones de Claude", "s", None, "view"),
     ("Vistas", "Estadísticas de uso", "stats", None, "view"),
     ("Vistas", "Personalizar el workspace", "customize", None, "view"),

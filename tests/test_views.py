@@ -37,6 +37,46 @@ class Sidebar(unittest.TestCase):
         self.assertEqual(sidebar.pane_state(st, "%9", "claude", "1"), "none")       # pane muerto
 
 
+class Subagentes(unittest.TestCase):
+    """Vivo = el meta.json no dice finished y el transcript se escribió hace menos de 10 min."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.now = 1_000_000.0
+
+    def sub(self, name, meta, age):
+        base = os.path.join(self.d, f"agent-{name}")
+        with open(base + ".meta.json", "w") as f:
+            json.dump(meta, f)
+        open(base + ".jsonl", "w").close()
+        os.utime(base + ".jsonl", (self.now - age, self.now - age))
+
+    def test_regla_de_vivos(self):
+        self.sub("vivo", {"description": "busca \x1b[2Jtests", "requestShape": "background"}, 30)
+        self.sub("terminado", {"description": "listo", "finished": True}, 30)
+        self.sub("viejo", {"description": "murió sin avisar"}, sidebar.SUB_TTL + 1)
+        self.sub("tipo", {"agentType": "Explore"}, 5)
+        with open(os.path.join(self.d, "agent-roto.meta.json"), "w") as f:
+            f.write("{no es json")
+        open(os.path.join(self.d, "agent-roto.jsonl"), "w").close()
+        os.utime(os.path.join(self.d, "agent-roto.jsonl"), (self.now, self.now))
+        got = sidebar.live_subagents_in(self.d, now=self.now)
+        self.assertEqual([(d, bg) for d, bg, _ in got], [("Explore", False), ("busca  [2Jtests", True)])
+        self.assertTrue(all("\x1b" not in d for d, _, _ in got))   # sin escapes del modelo en pantalla
+
+    def test_sin_transcript_no_cuenta(self):
+        with open(os.path.join(self.d, "agent-x.meta.json"), "w") as f:
+            json.dump({"description": "sin jsonl"}, f)
+        self.assertEqual(sidebar.live_subagents_in(self.d, now=self.now), [])
+
+    def test_registro_previo_de_bk_no_busca_subagentes(self):
+        self.assertEqual(sidebar.subagents("bk-i42"), [])
+        self.assertEqual(sidebar.subagents(""), [])
+
+    def test_tooltip_no_se_expande_en_tmux(self):
+        self.assertEqual(sidebar.tip("agente 1 · #(rm -rf ~) #{x}"), "agente 1 · ##(rm -rf ~) ##{x}")
+
+
 class Mascot(unittest.TestCase):
     def label(self, states):
         return STRIP.sub("", rail.mascot(40, states)[-1]).strip()
