@@ -1,5 +1,10 @@
 # ✿ bk shell
 
+![estado: beta](https://img.shields.io/badge/estado-beta-f095c8) [![tests](https://github.com/lautioliver/bk-shell/actions/workflows/tests.yml/badge.svg)](https://github.com/lautioliver/bk-shell/actions/workflows/tests.yml)
+
+> **Beta:** se usa todos los días, pero los comandos, los atajos y la forma de guardar el estado todavía
+> pueden cambiar entre versiones. Si algo se rompe, abrí un issue.
+
 **Un workspace de agentes en la terminal para [Barrilete Kit](https://github.com/lautioliver/barrilete-kit).**
 Chat con el orquestador, los agentes trabajando en vivo, las sesiones de Claude Code a un atajo y todo lo que
 quedó sin commitear, en una sola sesión de tmux.
