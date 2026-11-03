@@ -19,6 +19,7 @@ ENTRIES = [
     ("Agentes", "Cerrar la ventana de un agente", "stop", "ventana", "run"),
     ("Vistas", "Agentes en vivo", "watch --all", None, "view"),
     ("Vistas", "Cambios sin commitear", "changes", None, "view"),
+    ("Vistas", "Terminal rápida (alt+x)", "term", None, "view"),
     ("Vistas", "Sesiones de Claude", "s", None, "view"),
     ("Vistas", "Estadísticas de uso", "stats", None, "view"),
     ("Vistas", "Personalizar el workspace", "customize", None, "view"),

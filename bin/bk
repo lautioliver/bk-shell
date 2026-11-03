@@ -43,6 +43,7 @@ uso: bk [comando] [--dry-run]
                     agente que nadie esté mirando; --all: todos en un panel, como en el workspace)
   stop <ventana>    cerrar la ventana del agente (el worktree queda)
   roles             qué provider/modelo corre cada rol en este proyecto
+  term [dir]        terminal rápida del proyecto, persistente (alt+x la muestra y la esconde)
   tokens            tokens del día y costo equivalente en API, por modelo y proyecto
 
 Los comandos de agentes se corren dentro de un proyecto Barrilete.
@@ -90,6 +91,26 @@ agent_cmd() {
 need_tmux() { command -v tmux >/dev/null || die "falta tmux (brew install tmux)"; }
 
 has_window() { tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$1"; }
+
+# Terminal rápida (alt+x): una sesión term-<proyecto> que sobrevive al popup. Se abre en la raíz del
+# proyecto del pane; alt+x de nuevo la esconde y vuelve a aparecer como la dejaste.
+# El popup no expande #{pane_current_path} en su comando: el directorio llega con -d (el $PWD de acá).
+ws_term() {
+  need_tmux
+  local dir="$1" top name
+  [ -d "$dir" ] || die "no existe la carpeta $dir"
+  # El repo principal también desde un worktree de agente (su .git común está en el repo).
+  # || true: en una carpeta sin git, con pipefail, el fallo de git cortaría el script.
+  top=$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+  case "$top" in
+    */.git) top=${top%/.git} ;;
+    *) top=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null || true); top=${top:-$dir} ;;
+  esac
+  name="term-$(basename "$top" | tr -c 'A-Za-z0-9_\n-' '_')"
+  tmux has-session -t "=$name" 2>/dev/null || tmux new-session -d -s "$name" -c "$top"
+  tmux set-option -t "=$name" status off >/dev/null 2>&1 || true
+  exec env -u TMUX tmux attach -t "=$name"
+}
 
 # launch <ventana> <dir> <rol> <ref> <comando>
 launch() {
@@ -704,6 +725,7 @@ case "${1:-}" in
   _prs)        cmd_prs ;;
   rail)        exec python3 "$WS/lib/rail.py" ;;
   sidebar)     exec python3 "$WS/lib/sidebar.py" ;;
+  term|t)      shift; ws_term "${1:-$PWD}" ;;
   _nth)        tmux list-sessions -F '#{session_created} #{session_name}' 2>/dev/null \
                  | awk '$2 ~ /^bk/' | sort -n | awk -v n="${2:-1}" 'NR == n {print $2}' ;;
   changes)     exec python3 "$WS/lib/changes.py" ;;

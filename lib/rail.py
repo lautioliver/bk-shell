@@ -428,7 +428,8 @@ def frame(W, H, cwd):
     out += pet
     out += radio
     out.append(fit(f"{PETAL}alt+a{RST} {MUTED}agentes{RST}  {PETAL}alt+g{RST} {MUTED}cambios{RST}  "
-                   f"{PETAL}alt+k{RST} {MUTED}comandos{RST}  {PETAL}alt+s{RST} {MUTED}sesiones{RST}", W))
+                   f"{PETAL}alt+k{RST} {MUTED}comandos{RST}  {PETAL}alt+s{RST} {MUTED}sesiones{RST}  "
+                   f"{PETAL}alt+x{RST} {MUTED}terminal{RST}", W))
     return out[:H]
 
 
