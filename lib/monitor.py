@@ -469,8 +469,11 @@ def main():
                 body = [f"{hhmm(e['ts'])}  {e['who']}  {txt}", ""] + wrap(e["detail"], cols - 10)
                 overlay = (f"desvío · {e['who']}", body, None)
             elif k in ("s", "S"):
+                # leer antes de abrir para escribir: open("w") vacía el archivo y sound_on() leería "" (on)
+                new = "off" if sound_on() else "on"
                 os.makedirs(os.path.dirname(SOUND_OFF), exist_ok=True)
-                open(SOUND_OFF, "w").write("on\n" if not sound_on() else "off\n")
+                with open(SOUND_OFF, "w") as f:
+                    f.write(new + "\n")
     except KeyboardInterrupt:
         pass
     finally:

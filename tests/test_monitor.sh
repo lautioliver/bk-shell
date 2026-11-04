@@ -49,4 +49,13 @@ check_eq "$(grep -c '^ev loop' <<<"$OUT")" 1 "un solo loop (otros errores con Ex
 check_eq "$(grep -cx 'ev stale' <<<"$OUT")" 0 "trabado se avisa una vez, como grave"
 check_eq "$(grep -c '^ev ' <<<"$OUT")" 6 "ni un desvío de más"
 grep -q '^frame [0-9]' <<<"$OUT"; check $? "dibuja un cuadro"
+# La tecla s alterna el sonido en los dos sentidos (antes no volvía a prenderlo)
+SC="$TMP/sndconf"; mkdir -p "$SC"; echo off > "$SC/sound"
+tmux new-session -d -s mon -x 150 -y 40 "BK_CONFIG_DIR=$SC python3 $ROOT/lib/monitor.py"
+sleep 3; tmux send-keys -t mon s; sleep 1.2
+check_eq "$(cat "$SC/sound")" on "s prende el sonido apagado"
+tmux send-keys -t mon s; sleep 1.2
+check_eq "$(cat "$SC/sound")" off "s lo vuelve a apagar"
+tmux send-keys -t mon q
+
 finish
