@@ -45,14 +45,15 @@ check_eq "$(cd "$TMP" && "$ROOT/bin/bk" mode orchestrator)" bk "bk mode: fuera d
 check_eq "$(cd "$P" && "$ROOT/bin/bk" roles | awk '$1 == "planner" {print $2, $3}')" "claude/opus sub" "bk roles: provider/modelo y modo por separado"
 
 # bk chat --rama: sin nombre, con un nombre en blanco o fuera de un repo git falla con un mensaje claro y no
-# crea nada (ni worktree, ni rama, ni sesión). tmux en un servidor propio (TMUX_TMPDIR), nunca el tuyo.
+# crea nada (ni worktree, ni rama, ni sesión). tmux en un servidor propio (TMUX_TMPDIR), nunca el tuyo: con TMUX
+# definida (corriendo dentro de tmux) tmux ignora TMUX_TMPDIR, así que cada llamada va con env -u TMUX.
 if command -v tmux >/dev/null; then
   T="$TMP/tmux"; mkdir -p "$T" "$TMP/nogit"
   git init -q -b main "$TMP/repo" && git -C "$TMP/repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
   bkt() { env -u TMUX TMUX_TMPDIR="$T" BK_SESSION="bk-test-agents-$$" BK_CLIENT=nocliente BK_STATE_DIR="$TMP/state" "$ROOT/bin/bk" "$@"; }
   sess="zz-bk-test-$$"
-  TMUX_TMPDIR="$T" tmux -f /dev/null new-session -d -s "$sess" "sleep 300"
-  nsess() { TMUX_TMPDIR="$T" tmux list-sessions 2>/dev/null | wc -l | tr -d ' '; }
+  env -u TMUX TMUX_TMPDIR="$T" tmux -f /dev/null new-session -d -s "$sess" "sleep 300"
+  nsess() { env -u TMUX TMUX_TMPDIR="$T" tmux list-sessions 2>/dev/null | wc -l | tr -d ' '; }
   before=$(nsess)
   out=$(cd "$TMP/repo" && bkt chat --rama 2>&1 </dev/null); rc=$?
   [ $rc -ne 0 ] && grep -q 'bk chat --rama <nombre' <<<"$out"; check $? "chat --rama sin nombre falla con el uso"
@@ -65,7 +66,7 @@ if command -v tmux >/dev/null; then
   check_eq "$(git -C "$TMP/repo" branch --list 'chat/*')" "" "chat --rama fallido no crea ramas"
   [ ! -e "$TMP/repo-wt" ] && [ ! -e "$TMP/nogit-wt" ]; check $? "chat --rama fallido no crea worktrees"
   check_eq "$(nsess)" "$before" "chat --rama fallido no crea sesiones de tmux"
-  TMUX_TMPDIR="$T" tmux kill-session -t "=$sess" 2>/dev/null
+  env -u TMUX TMUX_TMPDIR="$T" tmux kill-session -t "=$sess" 2>/dev/null
 fi
 
 # bk song sin red ni mpv: géneros, tus radios y validaciones (no reproduce nada)
