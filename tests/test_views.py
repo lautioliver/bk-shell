@@ -437,3 +437,54 @@ class MonitorLimpiar(unittest.TestCase):
         self.assertGreater(M.cleared_at(), time.time() - 60)
         os.remove(M.CLEARED)
 
+
+class Detectores(unittest.TestCase):
+    """Credencial y atribución sin ruido: lo que el shell ejecuta (no un heredoc o una cita) y solo si la persona no habló."""
+
+    def setUp(self):
+        import deviations as D
+        self.D = D
+
+    def test_credencial_y_force_push_en_lo_que_corre(self):
+        for c in ("gh auth login", "cd x && env -u GH_CONFIG_DIR gh pr list | head", "(unset GH_CONFIG_DIR; gh api user)",
+                  "f() { gh auth token; }; f", "bash -c 'gh auth login'", "eval 'unset GH_CONFIG_DIR'",
+                  'X="$(gh auth token)" make', 'X="`gh auth token`"', "GH_TOKEN=abc gh pr view"):
+            self.assertTrue(self.D.is_credential(c), c)
+        for c in ("python3 - <<'EOF'\nrep('env -u GH_CONFIG_DIR')\nEOF", "printf '%s' '- usa env -u GH_CONFIG_DIR'",
+                  'echo "gh auth login es para vos"', "cat <<-EOF > x\n\tunset GH_CONFIG_DIR\n\tEOF\nls",
+                  "git commit -m 'no usar gh auth login'"):
+            self.assertFalse(self.D.is_credential(c), c)
+        self.assertTrue(self.D.is_force_push("bash -c 'git push -f origin main'"))
+        self.assertFalse(self.D.is_force_push("git commit -m 'evitá git push --force'"))
+
+    def test_lineal_con_un_comando_enorme(self):
+        big = "echo '" + "a" * 400000 + "' && " + "$(" * 2000 + "x"
+        t = time.time()
+        self.D.is_credential(big)
+        self.assertLess(time.time() - t, 2)
+
+    def transcript(self, *mensajes):
+        p = os.path.join(tempfile.mkdtemp(), "t.jsonl")
+        with open(p, "w") as f:
+            for m in mensajes:
+                f.write(json.dumps(m) + "\n")
+        return p
+
+    def test_atribucion_solo_si_la_persona_no_hablo(self):
+        sin = self.transcript({"type": "user", "message": {"content": "/implement-issue 42"}},
+                              {"type": "user", "message": {"content": [{"type": "tool_result", "content": "ok, sí"}]}},
+                              {"type": "user", "message": {"content": "<local-command-stdout>ok</local-command-stdout>"}})
+        con = self.transcript({"type": "user", "message": {"content": "sí, dale con la opción b"}})
+        txt = "Lo dejé así, como decidiste."
+        self.assertIsNotNone(self.D.attribution(txt, sin))       # nadie decidió nada en esa sesión
+        self.assertIsNone(self.D.attribution(txt, con))          # la persona sí dijo algo
+        self.assertIsNone(self.D.attribution("El revisor escribió: «como decidiste»", sin))   # citado
+        self.assertIsNone(self.D.attribution("```\nyou approved the wording\n```", sin))       # en código
+
+    def test_lee_solo_lo_nuevo_del_transcript(self):
+        p = self.transcript({"type": "user", "message": {"content": "/implement-issue 1"}})
+        self.assertFalse(self.D.person_decided(p))
+        with open(p, "a") as f:
+            f.write(json.dumps({"type": "user", "message": {"content": "ok, seguí"}}) + "\n")
+        self.assertTrue(self.D.person_decided(p))
+

@@ -9,6 +9,8 @@
   attribution       te atribuye una decisión ("como decidiste") — solo en agentes, no en tus chats
   review_finding    un hallazgo de una review publicada (bloqueante o para corregir), por clase
 """
+import json
+import os
 import re
 
 RE_CONTRACT = re.compile(r"^\s*result:\s*(escalate|blockers|question|dropped)\b", re.M)
@@ -123,20 +125,146 @@ RISK_HINTS = ("git push", "gh auth", "GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN"
               "indicaste", "you decided", "you approved", "you asked", "per your")
 
 
-def agent_risks(b, ctx, is_agent):
+HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+
+
+def shell_part(cmd):
+    """Lo que el shell ejecuta de un comando, sin los cuerpos de los heredoc ni el texto entre comillas.
+
+    Un script que se edita con `python3 - <<'EOF' … EOF` o un `printf '… GH_CONFIG_DIR …'` nombran cosas que
+    no corren: buscarlas ahí daba falsos "otra credencial". Lineal: un recorrido, sin regex anidadas."""
+    out, lines, i = [], (cmd or "").split("\n"), 0
+    while i < len(lines):
+        line = lines[i]
+        out.append(line)
+        delims = [m.group(2) for m in HEREDOC.finditer(line)]
+        i += 1
+        for d in delims:   # saltar el cuerpo hasta la línea que cierra (con o sin tabs, por <<-)
+            while i < len(lines) and lines[i].strip() != d:
+                i += 1
+            i += 1
+    text, res, q, i = "\n".join(out), [], None, 0
+    while i < len(text):   # vaciar lo que está entre comillas, salvo lo que el shell sí ejecuta: $(…) y `…` en "…"
+        ch = text[i]
+        if q == "'":
+            if ch == "'":
+                q = None
+                res.append(ch)
+        elif q == '"':
+            if ch == "\\":
+                i += 1
+            elif ch == '"':
+                q = None
+                res.append(ch)
+            elif ch == "`":
+                j = text.find("`", i + 1)
+                j = len(text) if j < 0 else j
+                res.append(" " + text[i + 1:j] + " ")
+                i = j
+            elif text.startswith("$(", i):
+                depth, j = 1, i + 2
+                while j < len(text) and depth:
+                    depth += {"(": 1, ")": -1}.get(text[j], 0)
+                    j += 1
+                res.append(" " + text[i + 2:j - 1] + " ")
+                i = j - 1
+        else:
+            if ch in "'\"":
+                q = ch
+            res.append(ch)
+        i += 1
+    return "".join(res)
+
+
+INNER = re.compile(r"\b(?:ba|z|da|k)?sh\s+-c\s+(['\"])(.*?)\1|\beval\s+(['\"])(.*?)\3", re.S)
+
+
+def runs(cmd, pattern):
+    """¿El comando ejecuta algo que coincide? Mira lo que corre el shell y lo que pasa a sh -c / bash -c / eval."""
+    if pattern.search(shell_part(cmd)):
+        return True
+    return any(pattern.search(shell_part(m.group(2) or m.group(4) or "")) for m in INNER.finditer(cmd or ""))
+
+
+def is_credential(cmd):
+    return runs(cmd, RE_CRED)
+
+
+def is_force_push(cmd):
+    return runs(cmd, RE_FORCE)
+
+
+QUOTED = re.compile(r"```.*?```|`[^`\n]*`|«[^»\n]*»|“[^”\n]*”|\"[^\"\n]*\"|^\s*>.*$", re.S | re.M)
+APPROVAL = re.compile(r"\b(s[ií]|dale|ok(ay)?|confirm[oa]?|aprob[oa]|apruebo|de acuerdo|hacelo|segu[ií]|yes|yep|"
+                      r"go ahead|approved?|lgtm|sounds good|do it)\b", re.I)
+_spoke = {}   # transcript → (tamaño leído, ¿la persona dijo algo que parece una decisión?)
+
+
+def person_decided(path):
+    """¿La persona escribió en esa sesión algo que parece una decisión ("sí", "dale", "ok", "aprobado"…)?
+
+    Los mensajes de la persona son los "user" con texto propio: no los resultados de herramientas, ni los meta,
+    ni las salidas de comandos locales. Lee lo nuevo del transcript desde la última vez."""
+    if not path:
+        return False
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return False
+    seen, found = _spoke.get(path, (0, False))
+    if found or size == seen:
+        return found
+    try:
+        with open(path, "rb") as f:
+            f.seek(seen if size > seen else 0)
+            data = f.read()
+    except OSError:
+        return False
+    for raw in data.splitlines():
+        try:
+            e = json.loads(raw)
+        except ValueError:
+            continue
+        if e.get("type") != "user" or e.get("isMeta"):
+            continue
+        c = (e.get("message") or {}).get("content")
+        texts = [c] if isinstance(c, str) else [b.get("text", "") for b in c or [] if isinstance(b, dict) and b.get("type") == "text"]
+        for t in texts:
+            if t and not t.lstrip().startswith(("<command-", "<local-command", "Caveat:", "<task-notification", "<system-reminder")) \
+                    and APPROVAL.search(t):
+                found = True
+                break
+        if found:
+            break
+    _spoke[path] = (size, found)
+    return found
+
+
+def attribution(text, path=None):
+    """El match de "como decidiste / you approved…" que vale la pena mirar, o None.
+
+    No cuenta lo que está citado (código, comillas, una cita con >), ni la sesión en la que la persona sí dijo
+    algo que parece una decisión: lo peligroso es atribuirle una decisión a alguien que no habló."""
+    m = RE_ATTR.search(QUOTED.sub(" ", text or ""))
+    if not m or person_decided(path):
+        return None
+    return RE_ATTR.search(text) or m
+
+
+def agent_risks(b, ctx, is_agent, path=None):
     """force_push / credential en un comando, attribution en un texto. Solo agentes: en tus chats
     `env -u GH_CONFIG_DIR` es lo correcto (corrés gh como vos)."""
     if not is_agent:
         return []
     if b.get("type") == "tool_use":
         cmd = str((b.get("input") or {}).get("command", ""))
-        if RE_FORCE.search(cmd):
+        if is_force_push(cmd):
             return [ev(ctx, "force_push", "force push", cmd[:200])]
-        if RE_CRED.search(cmd):
+        if is_credential(cmd):
             return [ev(ctx, "credential", "otra credencial de GitHub", cmd[:200])]
     elif b.get("type") == "text":
         t = b.get("text") or ""
-        m = RE_ATTR.search(t)
+        m = attribution(t, path)
         if m:
             return [ev(ctx, "attribution", "decisión atribuida a la persona", t[max(0, m.start() - 100): m.end() + 80])]
     return []

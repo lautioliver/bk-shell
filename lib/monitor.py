@@ -202,14 +202,14 @@ class Tail:
                 self.tools[b.get("id", "")] = f"{self.tool}::{cmd[:200]}"
                 if self.kind == "chat":   # los chats son tuyos: ahí env -u GH_CONFIG_DIR es lo correcto
                     continue
-                if RE_FORCE.search(cmd):
+                if (L.is_force_push(cmd) if L else RE_FORCE.search(cmd)):
                     mon.add("force_push", self.who, cmd[:200])
-                elif RE_CRED.search(cmd):
+                elif (L.is_credential(cmd) if L else RE_CRED.search(cmd)):   # no lo que está en un heredoc o entre comillas
                     mon.add("credential", self.who, cmd[:200])
             if t == "assistant" and b.get("type") == "text" and self.kind != "chat":
                 txt = b.get("text") or ""
-                if RE_ATTR.search(txt):
-                    m = RE_ATTR.search(txt)
+                m = L.attribution(txt, self.path) if L else RE_ATTR.search(txt)   # no citas; no si la persona decidió
+                if m:
                     mon.add("attribution", self.who, txt[max(0, m.start() - 80): m.end() + 80])
                 if RE_CI.search(txt) and self.pr and not self.first:
                     mon.check_ci(self.who, self.pr, txt)
