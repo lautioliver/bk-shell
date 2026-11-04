@@ -86,4 +86,39 @@ check_eq "$("$SG" bar-status)" "off		" "bk song bar-status sin música: off"
 "$SG" now >/dev/null 2>&1; [ $? -ne 0 ]; check $? "bk song now sin música falla con un mensaje"
 unset BK_SONG_CACHE BK_CONFIG_DIR
 
+# Nombrar agentes sin saber la ventana: bk say sin agente (al que te espera), por número o por palabra.
+# En un servidor de tmux aparte (TMUX_TMPDIR) para no tocar el tuyo.
+if command -v tmux >/dev/null; then
+  NT="$TMP/names"; mkdir -p "$NT/state" "$NT/tmux"
+  (
+    export TMUX_TMPDIR="$NT/tmux" BK_STATE_DIR="$NT/state" BK_CACHE_DIR="$NT/cache"; unset TMUX
+    tmux new-session -d -s agents -n i218 "cat > $NT/i218.txt"
+    tmux new-window -d -t agents: -n pr241 "printf '⏺ Listo el borrador.\\n  ¿La publico en el PR?\\n'; cat > $NT/pr241.txt"
+    tmux new-window -d -t agents: -n f237 "cat > $NT/f237.txt"
+    for w in i218 pr241 f237; do
+      p=$(tmux list-panes -t "agents:$w" -F '#{pane_id}')
+      case $w in i218) st=working ;; pr241) st=done ;; f237) st=waiting ;; esac
+      jq -n --arg p "$p" --arg s "$st" '{state: $s, pane: $p, ts: (now | floor), cwd: "/tmp"}' > "$NT/state/$w.json"
+    done
+    sleep 0.3
+    "$ROOT/bin/bk" say "hola" </dev/null >/dev/null 2>"$NT/err"; echo "auto2=$?"
+    grep -c '^  ?' "$NT/err" | sed 's/^/listados=/'
+    jq '.state = "working"' "$NT/state/f237.json" > "$NT/x" && mv "$NT/x" "$NT/state/f237.json"
+    "$ROOT/bin/bk" say "sí, publicala" </dev/null >/dev/null 2>&1; echo "auto1=$?"
+    "$ROOT/bin/bk" say 218 "por número" </dev/null >/dev/null 2>&1; echo "num=$?"
+    "$ROOT/bin/bk" say '#237' "con numeral" </dev/null >/dev/null 2>&1; echo "hash=$?"
+    "$ROOT/bin/bk" say nada "no existe" </dev/null >/dev/null 2>&1; echo "nada=$?"
+    "$ROOT/bin/bk" ls </dev/null | head -1 | cut -c1-7 | sed 's/^/primero=/'
+    sleep 0.3; tmux kill-server
+  ) > "$NT/out" 2>&1
+  check_eq "$(grep '^auto2=' "$NT/out")" "auto2=1" "bk say sin agente con dos esperando: no adivina, falla"
+  check_eq "$(grep '^listados=' "$NT/out")" "listados=2" "y lista a los dos que esperan"
+  check_eq "$(grep '^auto1=' "$NT/out")" "auto1=0" "bk say sin agente con uno esperando: le escribe a ese"
+  check_eq "$(cat "$NT/pr241.txt" 2>/dev/null)" "sí, publicala" "el que terminó preguntando recibe la respuesta"
+  check_eq "$(cat "$NT/i218.txt" 2>/dev/null)" "por número" "bk say 218: por el número de la ventana"
+  check_eq "$(cat "$NT/f237.txt" 2>/dev/null)" "con numeral" "bk say '#237': también con numeral"
+  check_eq "$(grep '^nada=' "$NT/out")" "nada=1" "bk say a algo que no existe falla"
+  check_eq "$(grep '^primero=' "$NT/out")" "primero=? pr241" "bk ls pone primero al que te espera"
+fi
+
 finish

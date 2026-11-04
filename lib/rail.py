@@ -8,6 +8,7 @@ import glob, json, os, subprocess, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import gentle as G
+import agents as AG   # título del issue/PR y "¿te pregunta algo?" (lo mismo que bk ls)
 from gentle import (AMBER, BOLD, FRAME, GREEN, IRIS, MUTED, PETAL, RED, ROSE, RST, TEXT,
                     card, cut, fit, lr, vlen)
 
@@ -203,6 +204,18 @@ def card_agents(W, live, ended, here_sid=None):
         return card("Agents", [f"{MUTED}nadie trabajando · {PETAL}alt+k{MUTED} para lanzar{RST}"], W, glyph="∗")
     rows = []
     inner_w = inner(W)
+    titles = AG.load_titles()
+
+    def asks(a):
+        s = a["s"]
+        if s.get("state") == "waiting":
+            return True
+        if s.get("state") in ("done", "idle"):
+            a["_q"] = AG.last_question(a.get("pane"))
+            return bool(a["_q"])
+        return False
+
+    live = sorted(live, key=lambda a: not asks(a))   # los que te esperan, primero
     for a in live:
         s = a["s"]
         g, txt, col = STATE_UI.get(s.get("state"), ("·", s.get("state") or "—", MUTED))
@@ -212,6 +225,8 @@ def card_agents(W, live, ended, here_sid=None):
             g, txt, col = "●", "confiá carpeta", RED
         if s.get("state") == "background" and s.get("background"):
             txt = f"{s['background']} en 2º plano"
+        if a.get("_q"):
+            g, txt, col = "?", "te pregunta", AMBER
         idle = time.time() - s.get("ts", time.time())
         if s.get("state") == "working" and s.get("tool") != "confianza":
             if idle > STALE:
@@ -223,6 +238,15 @@ def card_agents(W, live, ended, here_sid=None):
         left = f"{col}{g}{RST} {TEXT}{BOLD}{a['win']}{RST} {MUTED}{s.get('role') or ''}{RST}"
         right = f"{PETAL}{model(s.get('model'))}{RST}  {col}{txt}{RST}  {MUTED}{ago(s.get('ts', 0)):>5}{RST}"
         rows.append(lr(left, right, inner_w))
+        # qué es: "#218 (PR #240) Agregar las reglas…" (de la cache de bk ls; acá no se consulta GitHub)
+        m = AG.WIN_RE.match(a["win"])
+        num = (m.group(2) if m else "") or (s.get("ref") or "").lstrip("#")
+        t = AG.title_for(s.get("cwd"), num, titles, fetch=False) if num else ""
+        if t:
+            pr = AG.pr_of_branch(s.get("cwd"), titles, fetch=False) if m and m.group(1) == "i" else ""
+            rows.append(f"  {MUTED}{cut(f'#{num}' + (f' (PR #{pr})' if pr else '') + ' ' + t, inner_w - 2)}{RST}")
+        if a.get("_q"):
+            rows.append(f"  {AMBER}«{cut(a['_q'], inner_w - 4)}»{RST}")
         if s.get("state") == "working" and s.get("tool") not in (None, "-", "confianza"):
             rows.append(f"  {MUTED}↳ {s['tool']}{RST}")
         rows += sub_rows(s.get("_sid"), inner_w)
@@ -232,7 +256,7 @@ def card_agents(W, live, ended, here_sid=None):
         rows = [f"{MUTED}este chat:{RST}"] + here + rows
     active = sum(1 for a in live if a["s"].get("state") in ("working", "background", "waiting")) + len(here)
     busy = bool(here) or any(a["s"].get("state") in ("working", "background") for a in live)
-    waiting = any(a["s"].get("state") == "waiting" for a in live)
+    waiting = any(a["s"].get("state") == "waiting" or a.get("_q") for a in live)
     color = RED if waiting else IRIS if busy else FRAME
     title = f"Agents {MUTED}· {active} active · {len(ended)} finished"
     return card(title, rows, W, color=color, accent=IRIS if busy else ROSE, glyph="∗")

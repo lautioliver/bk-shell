@@ -55,6 +55,10 @@ quedó sin commitear, en una sola sesión de tmux.
   en la tira y con su descripción en el riel. Clic en el `└` (o `bk sub`) sigue su sesión en vivo, de solo lectura.
 - **Overlays**: `alt+a` agentes en vivo · `alt+g` cambios (worktrees y diff) · `alt+k` comandos · `alt+s` sesiones
   de Claude (abiertas y recientes, retomables) · `alt+u` estadísticas · `alt+,` estilo.
+- **Agentes con nombre fácil**: `bk say "sí, publicala"` le contesta al agente que te está esperando; si son varios,
+  te deja elegir. También acepta un número (`bk say 240 "…"`, aunque la ventana sea `i218`) o una palabra del título
+  (`bk say glosario "…"`); lo mismo `bk go`, `bk peek` y `bk stop`. `bk ls` y el riel muestran el título del issue o
+  PR de cada agente, la pregunta que te dejó, y ponen primero a los que te esperan.
 - **Estado real de cada agente**: trabajando, te espera (permiso, confianza en la carpeta, plan por aprobar),
   en segundo plano (comandos, monitores o subagentes que siguen corriendo) o listo.
 - **Stats**: mapa de actividad, modelo favorito, rachas y costo equivalente en API de todo tu historial de Claude Code.
@@ -93,6 +97,7 @@ bk review 57       # un reviewer sobre el PR #57
 bk s               # todas tus sesiones de Claude, para saltar o retomar
 bk chat --rama login  # otro chat del proyecto en su worktree y rama (chat/login)
 bk sub             # los subagentes vivos, para seguir uno en vivo
+bk say "sí"        # al agente que te espera (o: bk say 240 "…", bk say glosario "…")
 bk sound off       # sin sonidos (on, test)
 bk song cachengue  # radio de fondo (rock, reggaeton, techno, house; bk song help)
 bk help            # todo lo demás
