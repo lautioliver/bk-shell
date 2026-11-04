@@ -10,7 +10,9 @@
   Te esperan / Tareas  lo que necesita tu respuesta (preguntas, permisos, reviewers propuestos) y las tareas de
             los agentes: estado, cómo cerraron, el último evento y los bk say en cola
 
-Teclas: ↑↓ elegir agente · enter ver su pantalla · tab pasar a los desvíos · d detalle · s sonido on/off (al prenderlo suena) · q salir
+Teclas: ↑↓ elegir agente · enter ver su pantalla · tab pasar a los desvíos · d detalle · c limpiar los desvíos ·
+        s sonido on/off (al prenderlo suena) · q salir. `bk monitor --clear` limpia sin abrirlo: lo anterior no vuelve
+        aunque el monitor relea los transcripts del día.
 Suenan solo los graves (⚠): force push, otra credencial, CI en verde falso, el mismo error repetido y agente trabado 20 min.
 Solo lee: transcripts de Claude Code, el estado del hook y tmux. Los desvíos propios quedan en
 ~/.cache/bk/monitor-events.jsonl (para reabrir el monitor sin perderlos).
@@ -46,6 +48,7 @@ except Exception:
 
 CACHE = os.environ.get("BK_CACHE_DIR", os.path.expanduser("~/.cache/bk"))
 LOG = os.path.join(CACHE, "monitor-events.jsonl")
+CLEARED = os.path.join(CACHE, "monitor-cleared")   # hasta cuándo limpiaste los desvíos (c o bk monitor --clear)
 SOUND_OFF = os.path.join(os.environ.get("BK_CONFIG_DIR", os.path.expanduser("~/.config/bk")), "sound")
 VAULT_DATA = os.path.join(os.path.expanduser(os.environ.get("BARRILETE_VAULT", "~/Documents/Obsidian Vault")), "agents", "data")
 TO_VAULT = {"loop", "stale_grave", "ci_claim"}   # los que bk learn no puede ver en los transcripts: el monitor los anota
@@ -74,6 +77,23 @@ RE_CI = re.compile(r"\b(CI|checks?)\b[^.\n]{0,40}\b(en verde|verde|green|pass(?:
 
 def now():
     return time.time()
+
+
+def cleared_at():
+    """Hasta cuándo limpiaste los desvíos: lo anterior no se vuelve a mostrar aunque se relea de los transcripts."""
+    try:
+        with open(CLEARED) as f:
+            return float(f.read().strip() or 0)
+    except (OSError, ValueError):
+        return 0.0
+
+
+def clear_events():
+    """Limpia los desvíos: vacía el registro y anota la hora (sin esto, reabrir el monitor los volvía a encontrar)."""
+    os.makedirs(CACHE, exist_ok=True)
+    with open(CLEARED, "w") as f:
+        f.write(f"{now():.0f}\n")
+    open(LOG, "w").close()
 
 
 def epoch(ts):
@@ -226,12 +246,13 @@ class Monitor:
         self.week_avg = 0.0
         self.last_today = 0
         self.when, self.quiet = 0, False   # hora del evento que se está leyendo; quiet: backfill sin sonar
+        self.cleared = cleared_at()
         os.makedirs(CACHE, exist_ok=True)
         try:   # los desvíos de hoy que ya vio un monitor anterior
             day = time.strftime("%Y-%m-%d")
             for l in open(LOG):
                 e = json.loads(l)
-                if time.strftime("%Y-%m-%d", time.localtime(e["ts"])) == day:
+                if time.strftime("%Y-%m-%d", time.localtime(e["ts"])) == day and e["ts"] > self.cleared:
                     self.events.append(e)
                     self.seen.add((e["type"], e["who"], e["detail"][:80]))
         except (OSError, ValueError, KeyError):
@@ -240,6 +261,8 @@ class Monitor:
     def add(self, typ, who, detail):
         key = (typ, who, (detail or "")[:80])
         if key in self.seen:
+            return
+        if (self.when or now()) <= self.cleared:   # pasó antes de que limpiaras: no vuelve
             return
         self.seen.add(key)
         e = {"ts": self.when or now(), "type": typ, "who": who, "detail": re.sub(r"\s+", " ", detail or "").strip()[:300]}
@@ -620,11 +643,15 @@ def frame(mon, cols, lines, sel, focus, esel, overlay):
             out.append(G.fit(l, left_w) + " " + r)
     else:
         out += devs + G.card("Hoy", today_rows(mon, W - 6), W, glyph="◆")
-    keys = f" {MUTED}↑↓ elegir · enter su pantalla · tab desvíos · d detalle · s sonido · q salir{RST}"
+    keys = f" {MUTED}↑↓ elegir · enter su pantalla · tab desvíos · d detalle · c limpiar desvíos · s sonido · q salir{RST}"
     return out[:lines - 2] + [G.cut(LEGEND, W), keys]
 
 
 def main():
+    if "--clear" in sys.argv:   # bk monitor --clear: limpiar los desvíos sin abrirlo
+        clear_events()
+        print("desvíos limpiados: lo que pasó antes de ahora no vuelve a aparecer")
+        return
     if "--once" in sys.argv:   # un cuadro y salir (para probar)
         mon = Monitor()
         mon.refresh()
@@ -678,6 +705,9 @@ def main():
                 txt = TYPE_UI.get(e["type"], (e["type"],))[0]
                 body = [f"{hhmm(e['ts'])}  {e['who']}  {txt}", ""] + wrap(e["detail"], cols - 10)
                 overlay = (f"desvío · {e['who']}", body, None)
+            elif k in ("c", "C") and not overlay:
+                clear_events()
+                mon.events, mon.seen, mon.cleared, esel = [], set(), cleared_at(), 0
             elif k in ("s", "S"):
                 # leer antes de abrir para escribir: open("w") vacía el archivo y sound_on() leería "" (on)
                 new = "off" if sound_on() else "on"

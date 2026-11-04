@@ -48,6 +48,7 @@ uso: bk [comando] [--dry-run]
   changes           lo que los agentes dejaron sin commitear, con diff (alt+g)
   palette | k       todos los comandos con búsqueda (alt+k)
   monitor           pantalla para el otro monitor: qué te espera, agentes, tareas, costo y desvíos en vivo (los graves suenan)
+                    (c o bk monitor --clear limpian los desvíos: lo anterior no vuelve aunque relea los transcripts)
   stats             estadísticas de uso: actividad, modelos, rachas, costo (alt+u)
   customize         estilo del workspace: tarjetas float/neon, densidad, header, tema (alt+,)
   s                 sesiones de Claude estilo Orca: abiertas (saltar) y recientes de todas las

@@ -406,3 +406,34 @@ class MonitorAgrupa(unittest.TestCase):
         self.assertIn("#5 nuevo", t)
         self.assertIn("11 te esperan", t.splitlines()[0])   # 10 lecciones + el PR nuevo; los viejos no cuentan
 
+
+class MonitorLimpiar(unittest.TestCase):
+    """c / bk monitor --clear: lo que pasó antes no vuelve, aunque el monitor relea los transcripts del día."""
+
+    def test_limpiar_y_reabrir(self):
+        import monitor as M
+        self.addCleanup(lambda: os.path.exists(M.CLEARED) and os.remove(M.CLEARED))
+        m = M.Monitor()
+        m.when = time.time() - 120
+        m.add("interrupt", "i9", "viejo")
+        self.assertEqual(len(m.events), 1)
+        M.clear_events()
+        self.assertEqual(os.path.getsize(M.LOG), 0)
+        m2 = M.Monitor()                       # reabrir: relee el registro y los transcripts
+        m2.when = time.time() - 120            # el mismo desvío releído del transcript
+        m2.add("interrupt", "i9", "viejo")
+        self.assertEqual(m2.events, [])
+        m2.when = time.time() + 1              # uno nuevo, después de limpiar
+        m2.add("interrupt", "i9", "nuevo")
+        self.assertEqual([e["detail"] for e in m2.events], ["nuevo"])
+
+    def test_el_comando(self):
+        import subprocess
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        out = subprocess.run([sys.executable, os.path.join(root, "lib", "monitor.py"), "--clear"],
+                             capture_output=True, text=True, env=dict(os.environ)).stdout
+        self.assertIn("desvíos limpiados", out)
+        import monitor as M
+        self.assertGreater(M.cleared_at(), time.time() - 60)
+        os.remove(M.CLEARED)
+
