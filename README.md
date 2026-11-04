@@ -18,9 +18,9 @@ quedó sin commitear, en una sola sesión de tmux.
 │●│                                          │ ▎ ✿ Status            │
 │2│   chat con el orquestador (claude)       │ ▎ Project / Branch    │
 │○│                                          │ ▎ ∗ Agents            │  ← riel: estado, agentes,
-│─│   le pedís cosas a los agentes, ellos    │ ▎ ● i42 sonnet  12m   │    tus checkpoints y
-│1│   trabajan en sus ventanas y vos los     │ ▎ ◆ Checkpoints       │    lo que quedó sin commitear
-│●│   ves acá al costado                     │ ▎ ✎ Changes           │
+│─│   le pedís cosas a los agentes, ellos    │ ▎ ● i42 sonnet  12m   │    y lo que quedó
+│1│   trabajan en sus ventanas y vos los     │ ▎ ✎ Changes           │    sin commitear
+│●│   ves acá al costado                     │                       │
 │2│                                          │                       │
 └─┴──────────────────────────────────────────┴───────────────────────┘
  ↑ tira: workspaces y agentes (● trabajando · ● rojo te espera · ○ libre)
@@ -79,8 +79,10 @@ quedó sin commitear, en una sola sesión de tmux.
   `bk stop` la deja `cancelled`. Cuando un implementer abre un PR, `bk ls` propone su reviewer y lo lanzás con
   `bk approve pr<n>-reviewer`: nunca arranca solo. Si al implementer lo lanzó `/orchestrate` (`bk run --orchestrated`), no hay propuesta: el orquestador lanza al reviewer. `bk say` a un agente que trabaja se encola hasta que termine
   el turno (`--now` para ya). `bk tasks` las lista con su carpeta; `bk tasks prune --yes` borra las terminadas.
-  `bk ls`, el riel y `alt+a` muestran cómo cerró cada agente y los mensajes en cola, y las propuestas aparecen
-  en *Checkpoints*.
+  `bk ls`, el riel y `alt+a` muestran cómo cerró cada agente y los mensajes en cola.
+- **Checkpoints**: `bk checkpoints` junta lo que solo vos podés hacer, con el comando para hacerlo: planes por aprobar,
+  reviewers propuestos, PRs que te pidieron revisar, PRs tuyos listos para mergear y lecciones propuestas. Es la misma
+  lista que *Te esperan* en `bk monitor` (`--json` para la barra u otros scripts). No está en el riel, para no llenarlo.
 - **Stats**: mapa de actividad, modelo favorito, rachas y costo equivalente en API de todo tu historial de Claude Code.
 
 ## Requisitos

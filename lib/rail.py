@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""bk rail: riel derecho del workspace, a lo gentle-shell (Status → Agents → Checkpoints → Changes → radio).
+"""bk rail: riel derecho del workspace, a lo gentle-shell (Status → Agents → Changes → radio; los checkpoints están en bk monitor y bk checkpoints).
 
 Solo lectura; se redibuja cada 2 s. El detalle está en los overlays: alt+a agentes, alt+g cambios,
 alt+k comandos, alt+s sesiones.
@@ -15,9 +15,6 @@ from gentle import (AMBER, BOLD, FRAME, GREEN, IRIS, MUTED, PETAL, RED, ROSE, RS
 HERE = os.path.dirname(os.path.realpath(__file__))
 SESSION = os.environ.get("BK_SESSION", "agents")
 STATE = os.environ.get("BK_STATE_DIR", os.path.expanduser("~/.cache/bk/agents"))
-PRS = os.path.expanduser("~/.cache/bk/checkpoints_prs.json")
-LESSONS = os.path.join(os.environ.get("BARRILETE_VAULT", os.path.expanduser("~/Documents/Obsidian Vault")),
-                       "agents/lessons")
 SHELLS = {"zsh", "bash", "sh", "fish", "-zsh", "login"}
 
 _usage = {"t": 0, "data": None}
@@ -268,57 +265,6 @@ def card_agents(W, live, ended, here_sid=None):
     return card(title, rows, W, color=color, accent=IRIS if busy else ROSE, glyph="∗")
 
 
-def card_checkpoints(W, all_states):
-    rows = []
-    # Tareas propuestas (ADR-005 D6): el reviewer de un PR espera tu sí
-    for t in AG.proposals():
-        if PROJECT and t.get("repo") and os.path.realpath(t["repo"]) != os.path.realpath(PROJECT):
-            continue
-        rows.append(f"{AMBER}●{RST} aprobar {TEXT}{t['id']}{RST} {MUTED}· bk approve {t['id']}{RST}")
-    for s in all_states:
-        if not in_project(s.get("cwd")):
-            continue
-        if s.get("phase") == "plan_pending" and s.get("state") in ("done", "idle"):
-            rows.append(f"{RED}●{RST} plan por aprobar {MUTED}· {os.path.basename(s.get('cwd', ''))}{RST}")
-    # Refrescar en segundo plano cada ~2 min (bk _prs consulta GitHub con gh)
-    try:
-        age = time.time() - os.path.getmtime(PRS)
-    except OSError:
-        age = 1e9
-    if age > 120:
-        subprocess.Popen([os.path.join(os.path.dirname(HERE), "bin", "bk"), "_prs"],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-    try:
-        prs = json.load(open(PRS))
-    except Exception:
-        prs = []
-    others = 0
-    if PROJECT:
-        url = sh("git", "-C", PROJECT, "remote", "get-url", "origin").strip()
-        repo = url.rstrip("/").removesuffix(".git").split("/")[-1].split(":")[-1] if url else os.path.basename(PROJECT)
-        mine = [p for p in prs if p.get("repo", "").split("/")[-1] == repo]
-        others, prs = len(prs) - len(mine), mine
-    for p in prs:
-        if p.get("kind", "merge") == "merge":
-            rows.append(f"{GREEN}●{RST} mergear {TEXT}{p['repo'].split('/')[-1]}#{p['number']}{RST} {MUTED}{p['title']}{RST}")
-        else:
-            rows.append(f"{AMBER}●{RST} review {TEXT}{p['repo'].split('/')[-1]}#{p['number']}{RST} {MUTED}{p['title']}{RST}")
-    for f in glob.glob(os.path.join(LESSONS, "*.md")):
-        try:
-            head = open(f, encoding="utf-8").read(600)
-        except OSError:
-            continue
-        if "status: proposed" in head:
-            title = next((l[2:] for l in head.splitlines() if l.startswith("# ")), os.path.basename(f))
-            rows.append(f"{AMBER}󰌵{RST} lección {MUTED}{title}{RST}")
-    n = len(rows)
-    if others:
-        rows.append(f"{MUTED}+{others} en otros proyectos{RST}")
-    if not rows:
-        return []
-    return card(f"Checkpoints {MUTED}· {n} tuyos", rows, W, color=FRAME, glyph="◆")
-
-
 def card_changes(W, roots, max_rows):
     rows, nfiles = [], 0
     for root in roots:
@@ -470,7 +416,6 @@ def frame(W, H, cwd):
     out += memo(("status", W), 2, lambda: card_status(W, cwd, live))
     here_sid = memo(("chat_sid",), 2, lambda: chat_sid(by_pane))
     out += card_agents(W, live, ended, here_sid)
-    out += memo(("ckpt", W), 2, lambda: card_checkpoints(W, all_))
     radio = memo(("radio", W), 5, lambda: line_radio(W))
     room = H - len(out) - len(radio) - 2
     # Lugar para Barrilete (8 filas): Changes puede usar el resto si le quedan al menos 4
