@@ -75,6 +75,7 @@ def states():
             s = json.load(open(f))
         except Exception:
             continue
+        s["_sid"] = os.path.basename(f)[:-5]   # el hook nombra el archivo <session_id>.json
         all_.append(s)
         p = s.get("pane")
         if p and (p not in by_pane or s.get("ts", 0) > by_pane[p].get("ts", 0)):
@@ -173,8 +174,32 @@ def memo(key, ttl, fn):
     return out
 
 
-def card_agents(W, live, ended):
-    if not live and not ended:
+def sub_rows(sid, inner_w, indent="  "):
+    """Filas de los subagentes vivos de una sesión (los de la herramienta Agent, que no son ventanas)."""
+    from sidebar import subagents
+    rows = []
+    for desc, bg, _ in subagents(sid):
+        g = HALF[(TICK[0] // 2) % len(HALF)] if bg else SPIN[TICK[0] % len(SPIN)]
+        tag = f"{AMBER}2º plano{RST}" if bg else f"{IRIS}trabajando{RST}"
+        rows.append(lr(f"{indent}{MUTED}↳{RST} {IRIS}{g}{RST} {TEXT}{desc}{RST}", tag, inner_w))
+    return rows
+
+
+def chat_sid(by_pane):
+    """Sesión de Claude del chat de este workspace (el pane de la ventana del riel que no es tira ni riel)."""
+    me = os.environ.get("TMUX_PANE", "")
+    if not me:
+        return None
+    for l in sh("tmux", "list-panes", "-t", me, "-F", "#{pane_id}\t#{pane_start_command}").splitlines():
+        pid, start = (l.split("\t") + [""])[:2]
+        if pid != me and "bk sidebar" not in start and "bk rail" not in start:
+            return (by_pane.get(pid) or {}).get("_sid")
+    return None
+
+
+def card_agents(W, live, ended, here_sid=None):
+    here = sub_rows(here_sid, inner(W), indent="") if here_sid else []
+    if not live and not ended and not here:
         return card("Agents", [f"{MUTED}nadie trabajando · {PETAL}alt+k{MUTED} para lanzar{RST}"], W, glyph="∗")
     rows = []
     inner_w = inner(W)
@@ -200,10 +225,13 @@ def card_agents(W, live, ended):
         rows.append(lr(left, right, inner_w))
         if s.get("state") == "working" and s.get("tool") not in (None, "-", "confianza"):
             rows.append(f"  {MUTED}↳ {s['tool']}{RST}")
+        rows += sub_rows(s.get("_sid"), inner_w)
     for a in ended:
         rows.append(f"{MUTED}✓ {a['win']} · terminó{RST}")
-    active = sum(1 for a in live if a["s"].get("state") in ("working", "background", "waiting"))
-    busy = any(a["s"].get("state") in ("working", "background") for a in live)
+    if here:
+        rows = [f"{MUTED}este chat:{RST}"] + here + rows
+    active = sum(1 for a in live if a["s"].get("state") in ("working", "background", "waiting")) + len(here)
+    busy = bool(here) or any(a["s"].get("state") in ("working", "background") for a in live)
     waiting = any(a["s"].get("state") == "waiting" for a in live)
     color = RED if waiting else IRIS if busy else FRAME
     title = f"Agents {MUTED}· {active} active · {len(ended)} finished"
@@ -405,7 +433,8 @@ def frame(W, H, cwd):
     live, ended = agents(by_pane)
     out = []
     out += memo(("status", W), 2, lambda: card_status(W, cwd, live))
-    out += card_agents(W, live, ended)
+    here_sid = memo(("chat_sid",), 2, lambda: chat_sid(by_pane))
+    out += card_agents(W, live, ended, here_sid)
     out += memo(("ckpt", W), 2, lambda: card_checkpoints(W, all_))
     radio = memo(("radio", W), 5, lambda: line_radio(W))
     room = H - len(out) - len(radio) - 2
@@ -428,7 +457,8 @@ def frame(W, H, cwd):
     out += pet
     out += radio
     out.append(fit(f"{PETAL}alt+a{RST} {MUTED}agentes{RST}  {PETAL}alt+g{RST} {MUTED}cambios{RST}  "
-                   f"{PETAL}alt+k{RST} {MUTED}comandos{RST}  {PETAL}alt+s{RST} {MUTED}sesiones{RST}", W))
+                   f"{PETAL}alt+k{RST} {MUTED}comandos{RST}  {PETAL}alt+s{RST} {MUTED}sesiones{RST}  "
+                   f"{PETAL}alt+x{RST} {MUTED}terminal{RST}", W))
     return out[:H]
 
 

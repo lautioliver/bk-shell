@@ -53,8 +53,9 @@ def bg(h):
 RST, BOLD, DIM, ITAL = "\033[0m", "\033[1m", "\033[2m", "\033[3m"
 NIGHT = {"rose": "F095C8", "petal": "D7A0B8", "iris": "A99CF5", "amber": "E6B450", "green": "8CCB8A",
          "red": "F07178", "text": "ECE4F0", "muted": "8A80A8", "frame": "7A5F9E", "tint": "2A2852"}
-DAY = {"rose": "B0307A", "petal": "8A4E7A", "iris": "5B4BC7", "amber": "8C6B00", "green": "2F7A45",
-       "red": "B4235A", "text": "2B1D3F", "muted": "6E5A8A", "frame": "9A86C0", "tint": "D9CBEE"}
+# Día: apagado (saturación ~la mitad que antes) y con contraste >= 5:1 sobre blanco para el texto
+DAY = {"rose": "8E4F75", "petal": "7A6070", "iris": "5A5596", "amber": "76601E", "green": "3D6A4C",
+       "red": "9C3F58", "text": "2E2A36", "muted": "6F6880", "frame": "BDB4CC", "tint": "EEEBF2"}
 P = DAY if is_day() else NIGHT
 ROSE, PETAL, IRIS, AMBER = fg(P["rose"]), fg(P["petal"]), fg(P["iris"]), fg(P["amber"])
 GREEN, RED, TEXT, MUTED, FRAME = fg(P["green"]), fg(P["red"]), fg(P["text"]), fg(P["muted"]), fg(P["frame"])

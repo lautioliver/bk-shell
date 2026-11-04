@@ -31,4 +31,59 @@ check_eq "$(jq -c .hooks "$H/.claude/settings.json")" "{}" "desinstalar saca el 
 grep -q 'bk-shell' "$H/.tmux.conf"; [ $? -ne 0 ]; check $? "desinstalar saca bk.conf de tmux.conf"
 [ "$(jq -r .theme "$H/.claude/settings.json")" = dark ]; check $? "no toca el resto de settings.json"
 
+# bk mode <rol>: la 3.ª columna de roles.yml (el del proyecto manda), bk si no tiene; un rol que no existe falla.
+# role_spec sigue devolviendo solo provider/modelo.
+P="$TMP/proj"; mkdir -p "$P/.barrilete"; git init -q "$P"
+printf 'planner: claude/opus sub\nreviewer: claude/sonnet   # sin modo\nimplementer: codex/gpt-5 bk # comentario\n' >"$P/.barrilete/roles.yml"
+check_eq "$(cd "$P" && "$ROOT/bin/bk" mode planner)" sub "bk mode: el modo del roles.yml del proyecto"
+check_eq "$(cd "$P" && "$ROOT/bin/bk" mode reviewer)" bk "bk mode: sin modo es bk"
+check_eq "$(cd "$P" && "$ROOT/bin/bk" mode implementer)" bk "bk mode: modo seguido de un comentario"
+check_eq "$(cd "$TMP" && "$ROOT/bin/bk" mode orchestrator)" bk "bk mode: fuera de un proyecto, el roles.yml de bk (sin modos) da bk"
+(cd "$P" && "$ROOT/bin/bk" mode no-existe >/dev/null 2>&1); check $(( $? == 0 )) "bk mode: un rol desconocido falla"
+(cd "$P" && "$ROOT/bin/bk" mode '.*' >/dev/null 2>&1); check $(( $? == 0 )) "bk mode: no acepta regex como rol"
+check_eq "$(cd "$P" && "$ROOT/bin/bk" roles | awk '$1 == "planner" {print $2, $3}')" "claude/opus sub" "bk roles: provider/modelo y modo por separado"
+
+# bk chat --rama: sin nombre, con un nombre en blanco o fuera de un repo git falla con un mensaje claro y no
+# crea nada (ni worktree, ni rama, ni sesión). tmux en un servidor propio (TMUX_TMPDIR), nunca el tuyo.
+if command -v tmux >/dev/null; then
+  T="$TMP/tmux"; mkdir -p "$T" "$TMP/nogit"
+  git init -q -b main "$TMP/repo" && git -C "$TMP/repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+  bkt() { env -u TMUX TMUX_TMPDIR="$T" BK_SESSION="bk-test-agents-$$" BK_CLIENT=nocliente BK_STATE_DIR="$TMP/state" "$ROOT/bin/bk" "$@"; }
+  sess="zz-bk-test-$$"
+  TMUX_TMPDIR="$T" tmux -f /dev/null new-session -d -s "$sess" "sleep 300"
+  nsess() { TMUX_TMPDIR="$T" tmux list-sessions 2>/dev/null | wc -l | tr -d ' '; }
+  before=$(nsess)
+  out=$(cd "$TMP/repo" && bkt chat --rama 2>&1 </dev/null); rc=$?
+  [ $rc -ne 0 ] && grep -q 'bk chat --rama <nombre' <<<"$out"; check $? "chat --rama sin nombre falla con el uso"
+  out=$(cd "$TMP/repo" && bkt chat --rama "   " "$sess" 2>&1 </dev/null); rc=$?
+  [ $rc -ne 0 ] && grep -q 'bk chat --rama <nombre' <<<"$out"; check $? "chat --rama con nombre en blanco falla"
+  out=$(cd "$TMP/repo" && bkt chat --rama "¡¿~~?!" "$sess" 2>&1 </dev/null); rc=$?
+  [ $rc -ne 0 ] && grep -q 'no deja un nombre de rama' <<<"$out"; check $? "chat --rama con un nombre sin letras ni números falla"
+  out=$(cd "$TMP/nogit" && bkt chat --rama algo "$sess" 2>&1 </dev/null); rc=$?
+  [ $rc -ne 0 ] && grep -q 'necesita un repo git' <<<"$out"; check $? "chat --rama fuera de un repo git falla"
+  check_eq "$(git -C "$TMP/repo" branch --list 'chat/*')" "" "chat --rama fallido no crea ramas"
+  [ ! -e "$TMP/repo-wt" ] && [ ! -e "$TMP/nogit-wt" ]; check $? "chat --rama fallido no crea worktrees"
+  check_eq "$(nsess)" "$before" "chat --rama fallido no crea sesiones de tmux"
+  TMUX_TMPDIR="$T" tmux kill-session -t "=$sess" 2>/dev/null
+fi
+
+# bk song sin red ni mpv: géneros, tus radios y validaciones (no reproduce nada)
+SG="$ROOT/lib/song.sh"; export BK_SONG_CACHE="$TMP/song" BK_CONFIG_DIR="$TMP/songconf"
+check_eq "$("$SG" genres | tr '\n' ' ')" "techno house rock reggaeton cachengue " "bk song: los cinco géneros de fábrica"
+check_eq "$("$SG" stations | awk -F'\t' '$3 == "cachengue"' | wc -l | tr -d ' ')" 3 "bk song: tres radios de cachengue"
+"$SG" add mia https://example.com/a.mp3 fiesta Mi Radio >/dev/null; check $? "bk song add guarda una radio"
+check_eq "$("$SG" stations | head -1)" "mia	Mi Radio	fiesta" "bk song: tus radios van primero, con su género"
+check_eq "$("$SG" genres | head -1)" fiesta "bk song: un género tuyo aparece primero en genres"
+"$SG" add mia https://example.com/b.mp3 fiesta >/dev/null
+check_eq "$(grep -c '^mia|' "$BK_CONFIG_DIR/song-stations")" 1 "bk song add con la misma clave la reemplaza"
+"$SG" add 'Mal!' https://x >/dev/null 2>&1; [ $? -ne 0 ]; check $? "bk song add rechaza una clave inválida"
+"$SG" add ok 'ftp://x' >/dev/null 2>&1; [ $? -ne 0 ]; check $? "bk song add rechaza una url que no es http(s)"
+"$SG" add ok 'https://x|y' >/dev/null 2>&1; [ $? -ne 0 ]; check $? "bk song add rechaza una url con |"
+"$SG" rm mia >/dev/null; check $? "bk song rm saca una radio tuya"
+"$SG" rm techno >/dev/null 2>&1; [ $? -ne 0 ]; check $? "bk song rm no saca una de fábrica"
+"$SG" list nada >/dev/null 2>&1; [ $? -ne 0 ]; check $? "bk song list con un género que no existe falla"
+check_eq "$("$SG" bar-status)" "off		" "bk song bar-status sin música: off"
+"$SG" now >/dev/null 2>&1; [ $? -ne 0 ]; check $? "bk song now sin música falla con un mensaje"
+unset BK_SONG_CACHE BK_CONFIG_DIR
+
 finish

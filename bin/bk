@@ -9,6 +9,13 @@ SESSION="${BK_SESSION:-agents}"
 STATE_DIR="${BK_STATE_DIR:-$HOME/.cache/bk/agents}"
 DRY=0
 
+# Los atajos de tmux pasan BK_FROM/BK_CLIENT a los popups, pero el comando de display-popup no
+# expande #{…}: llegan literales. Sin un valor real, tomarlos del cliente de tmux actual.
+if [ -n "${TMUX:-}" ]; then
+  case "${BK_FROM:-}" in *'#{'*) BK_FROM=$(tmux display-message -p '#{session_name}' 2>/dev/null || true); export BK_FROM ;; esac
+  case "${BK_CLIENT:-}" in *'#{'*) BK_CLIENT=$(tmux display-message -p '#{client_name}' 2>/dev/null || true); export BK_CLIENT ;; esac
+fi
+
 die()  { printf 'bk: %s\n' "$*" >&2; exit 1; }
 info() { printf '\033[2m%s\033[0m\n' "$*"; }
 
@@ -20,7 +27,9 @@ uso: bk [comando] [--dry-run]
                     si ya existe, vuelve a ella). Uno por proyecto, cada uno en su escritorio
   rerun [--go] [pr…]  volver a correr los checks de Actions que fallaron (sin --go: solo muestra)
   new | n           popup "Nuevo": chat nuevo en este proyecto u otro workspace (alt+n, o + en la tira)
-  chat [--suelto]   un claude nuevo en el proyecto del workspace (o sin proyecto), en el lugar del chat (alt+q vuelve)
+  chat [--suelto]   otro chat del proyecto, como un workspace más en la tira (alt+N); --suelto: sin
+                    proyecto, en el lugar del chat (alt+q vuelve)
+  chat --rama N     otro chat en su propio worktree y rama chat/N (desde la rama principal); si existe, lo reusa
   open [proyecto]   abrir el workspace de otro proyecto en una ventana nueva (sin argumento: los abiertos)
   plan "<idea>"     planner: /plan-feature en la raíz del proyecto
   run <issue>       routing.py elige el rol → prepare.sh crea worktree → implementer en tmux
@@ -42,7 +51,14 @@ uso: bk [comando] [--dry-run]
   watch [ventana]   pantalla de un agente en vivo, solo lectura (sin ventana: toma el próximo
                     agente que nadie esté mirando; --all: todos en un panel, como en el workspace)
   stop <ventana>    cerrar la ventana del agente (el worktree queda)
-  roles             qué provider/modelo corre cada rol en este proyecto
+  roles             qué provider/modelo corre cada rol en este proyecto, y su modo
+  sound [on|off|test]  sonido por tipo de pedido de los agentes: terminó, pregunta, permiso, error
+  song [género]     radio por género (techno, house, rock, reggaeton, cachengue), tuya o cualquier url (bk song help)
+  mode <rol>        cómo lo lanza el orquestador: main (la sesión principal), bk (ventana propia) o
+                    sub (subagente); 3.ª columna de roles.yml, bk si no tiene
+  sub [transcript]  ver en vivo un subagente, solo lectura (sin argumento: elegir de los vivos); también
+                    con clic en una fila └ de la tira
+  term [dir]        terminal rápida del proyecto, persistente (alt+x la muestra y la esconde)
   tokens            tokens del día y costo equivalente en API, por modelo y proyecto
 
 Los comandos de agentes se corren dentro de un proyecto Barrilete.
@@ -91,6 +107,27 @@ need_tmux() { command -v tmux >/dev/null || die "falta tmux (brew install tmux)"
 
 has_window() { tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$1"; }
 
+# Terminal rápida (alt+x): una sesión term-<proyecto> que sobrevive al popup. Se abre en la raíz del
+# proyecto del pane; alt+x de nuevo la esconde y vuelve a aparecer como la dejaste.
+# El popup no expande #{pane_current_path} en su comando: el directorio llega con -d (el $PWD de acá).
+ws_term() {
+  need_tmux
+  local dir="$1" top name
+  [ -d "$dir" ] || die "no existe la carpeta $dir"
+  # El repo principal también desde un worktree de agente (su .git común está en el repo).
+  # || true: en una carpeta sin git, con pipefail, el fallo de git cortaría el script.
+  top=$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+  case "$top" in
+    */.git) top=${top%/.git} ;;
+    *) top=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null || true); top=${top:-$dir} ;;
+  esac
+  name="term-$(basename "$top" | tr -c 'A-Za-z0-9_\n-' '_')"
+  # Una sesión por repo, pero arranca en la carpeta desde donde la abriste (p. ej. el worktree)
+  tmux has-session -t "=$name" 2>/dev/null || tmux new-session -d -s "$name" -c "$dir"
+  tmux set-option -t "=$name" status off >/dev/null 2>&1 || true
+  exec env -u TMUX tmux attach -t "=$name"
+}
+
 # launch <ventana> <dir> <rol> <ref> <comando>
 launch() {
   local win="$1" dir="$2" role="$3" ref="$4" cmd="$5" spec provider model
@@ -117,6 +154,10 @@ launch() {
     pane=$(tmux new-window -d -P -F '#{pane_id}' -t "$SESSION:" -n "$win" -c "$dir" "${env[@]}" "$full")
   else
     pane=$(tmux new-session -d -P -F '#{pane_id}' -s "$SESSION" -n "$win" -c "$dir" "${env[@]}" "$full")
+    # new-session -e también graba las variables en la sesión, y las heredarían todas las ventanas
+    # siguientes (otro agente quedaba con el rol o el issue de este). Son solo de este pane.
+    local kv
+    for kv in "${env[@]}"; do [ "$kv" = -e ] || tmux set-environment -u -t "$SESSION" "${kv%%=*}" 2>/dev/null || true; done
   fi
   # La ventana queda abierta si el agente termina, para leer lo último
   tmux set-option -w -t "$SESSION:$win" remain-on-exit on >/dev/null
@@ -409,19 +450,68 @@ new_window() {
   fi
 }
 
-# bk chat [sesión]: un claude nuevo en la carpeta del proyecto del workspace. Vive en la sesión
-# "agents" (aparece en la tira) y se trae al lugar del chat; alt+q vuelve al orquestador.
+# bk chat [--suelto | --rama <nombre>] [sesión]
+#   (sin opción)  otro chat del proyecto del workspace: un workspace más en la tira (bk-<proyecto>-2, -3…),
+#                 no reemplaza al actual
+#   --rama N      un workspace en su propio worktree (../<repo>-wt/chat-<n>) y rama chat/<n>, creada desde
+#                 la rama principal de origin: varios cambios del mismo proyecto a la vez sin pisarse.
+#                 Si ya existe, lo reusa
+#   --suelto      un claude sin proyecto (~/.bk/chats) en la sesión "agents", traído al lugar del chat
 cmd_chat() {
   set +euo pipefail
-  local loose=0; [ "${1:-}" = "--suelto" ] && { loose=1; shift; }
+  local loose=0 branch="" want_branch=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --suelto) loose=1; shift ;;
+      --rama) want_branch=1; branch="${2:-}"; if [ $# -ge 2 ]; then shift 2; else shift; fi ;;
+      *) break ;;
+    esac
+  done
   local s="${1:-$(tmux display-message -p '#{session_name}' 2>/dev/null)}" top name n pane
-  if [ "$loose" = 1 ]; then
-    # Chat sin proyecto: en una carpeta propia (~/.bk/chats), así Claude no lee tu home ni pide confiar en ella
-    top="$HOME/.bk/chats"; mkdir -p "$top"; name="c-suelto"
-  else
+  if [ "$want_branch" = 1 ] && [ "$loose" = 0 ]; then
+    # Todo se valida antes de crear nada (worktree, rama o sesión)
+    [ -n "${branch//[[:space:]]/}" ] || die "bk chat --rama <nombre del cambio>"
     top=$(tmux show-environment -t "$s" BK_PROJECT 2>/dev/null | sed -n 's/^BK_PROJECT=//p')
-    top="${top:-$PWD}"; name="c-$(basename "$top" | cut -c1-10)"
+    top="${top:-$PWD}"
+    git -C "$top" rev-parse --show-toplevel >/dev/null 2>&1 || die "una rama aparte necesita un repo git ($top no es uno)"
+    top=$(project_top "$top")   # el repo principal, aunque el chat actual ya esté en un worktree
+    local slug wt base
+    # Sin acentos (ñ → n): iconv puede salir con error aunque haya convertido todo, así que se usa lo que
+    # devolvió y, solo si no devolvió nada, el nombre tal cual. Los ~ ' ^ que deja la transliteración, fuera.
+    slug=$(printf '%s' "$branch" | iconv -f utf-8 -t ascii//TRANSLIT 2>/dev/null)
+    [ -n "$slug" ] || slug=$branch
+    slug=$(printf '%s' "$slug" | tr -d "~'^\`\"" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' \
+           | cut -c1-30 | sed 's/^-*//; s/-*$//')
+    [ -n "$slug" ] || die "el nombre '$branch' no deja un nombre de rama válido (usá letras o números)"
+    wt="$(dirname "$top")/$(basename "$top")-wt/chat-$slug"
+    if [ ! -d "$wt" ]; then
+      git -C "$top" fetch -q origin 2>/dev/null
+      base=$(git -C "$top" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || echo HEAD)
+      if git -C "$top" show-ref -q --verify "refs/heads/chat/$slug"; then
+        git -C "$top" worktree add -q "$wt" "chat/$slug" || die "no pude crear el worktree $wt"
+      else
+        git -C "$top" worktree add -q -b "chat/$slug" "$wt" "$base" || die "no pude crear el worktree $wt"
+      fi
+      info "rama chat/$slug desde $base · $wt"
+    fi
+    # Un workspace propio (otro número en la tira, alt+N): bk-<proyecto>-<nombre>; si ya está, vuelve a él
+    WS_SESSION="bk-$(project_of "$top")-$slug"
+    workspace "$wt"
+    return
+  elif [ "$want_branch" = 1 ]; then
+    die "--rama y --suelto no van juntos"
+  elif [ "$loose" = 0 ]; then
+    # Otro chat en la carpeta del proyecto: un workspace más (bk-<proyecto>-2, -3…), no reemplaza al actual
+    top=$(tmux show-environment -t "$s" BK_PROJECT 2>/dev/null | sed -n 's/^BK_PROJECT=//p')
+    top="${top:-$PWD}"
+    local wsbase k=2; wsbase="bk-$(project_of "$top")"
+    while tmux has-session -t "=$wsbase-$k" 2>/dev/null; do k=$((k + 1)); done
+    WS_SESSION="$wsbase-$k"
+    workspace "$top"
+    return
   fi
+  # Chat sin proyecto: en una carpeta propia (~/.bk/chats), así Claude no lee tu home ni pide confiar en ella
+  top="$HOME/.bk/chats"; mkdir -p "$top"; name="c-suelto"
   n=1; while has_window "$name$([ $n -gt 1 ] && echo "-$n")"; do n=$((n + 1)); done
   [ $n -gt 1 ] && name="$name-$n"
   if tmux has-session -t "$SESSION" 2>/dev/null; then
@@ -479,14 +569,15 @@ cmd_open() {
   fi
   # Un workspace ya abierto con ese nombre (bk-<q>, o el único que lo contenga): conectarse a ese
   local sess
-  sess=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -x "bk-$q" \
-         || tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^bk-' | grep -i -- "$q")
+  # || true: sin coincidencias el grep falla y, con pipefail, cortaría el script sin decir nada
+  sess=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -xF -- "bk-$q" \
+         || tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^bk-' | grep -iF -- "$q" || true)
   if [ -n "$sess" ] && [ "$(wc -l <<<"$sess")" -eq 1 ]; then
     if [ -n "${TMUX:-}" ]; then tmux switch-client ${BK_CLIENT:+-c "$BK_CLIENT"} -t "$sess"; else
       new_window "tmux attach -t $sess"; fi
     info "→ $sess"; return
   fi
-  local dir; dir=$(resolve_project "$q"); [ -n "$dir" ] || die "no encuentro el proyecto '$q' (pasá la ruta, o bk open para ver los abiertos)"
+  local dir; dir=$(resolve_project "$q" || true); [ -n "$dir" ] || die "no encuentro el proyecto '$q' (pasá la ruta, o bk open para ver los abiertos)"
   new_window "cd '$dir' && bk ws"
   info "abriendo $(project_of "$dir") en una ventana nueva → $dir"
 }
@@ -556,11 +647,17 @@ stop() {
   need_tmux
   local win="${1:?bk stop <ventana>}" panes
   has_window "$win" || die "no existe la ventana '$win'"
+  # Si el agente está de visita en un workspace (alt+shift+N), en esta ventana quedó el chat de ese
+  # workspace: devolverlo a su lugar antes de cerrar, para no matarlo. || true: sin chat de visita el
+  # grep no encuentra nada y, con pipefail, cortaría el script en silencio.
+  local ws
+  ws=$(tmux list-panes -t "$SESSION:$win" -F '#{@bk_ws}' | grep -m1 . || true)
+  [ -n "$ws" ] && ws_agent "$ws" 0
   panes=$(tmux list-panes -t "$SESSION:$win" -F '#{pane_id}')
   tmux kill-window -t "$SESSION:$win"
   # Matar el pane no siempre dispara SessionEnd: limpiar el estado de la barra a mano
   for p in $panes; do
-    grep -l "\"pane\": *\"$p\"" "$STATE_DIR"/*.json 2>/dev/null | xargs rm -f
+    { grep -l "\"pane\": *\"$p\"" "$STATE_DIR"/*.json 2>/dev/null || true; } | xargs rm -f
   done
   sketchybar --trigger agent_update >/dev/null 2>&1 || true
   info "cerrada $win (el worktree, si había, queda: cleanup.sh lo limpia cuando el issue cierre)"
@@ -589,10 +686,43 @@ ls_agents() {
   | { printf 'VENTANA\tPROYECTO\tREF\tROL\tMODELO\tESTADO\tHACE\n'; cat; } | column -t -s $'\t'
 }
 
+# role_mode <rol> [raíz] -> main | bk | sub: cómo lo lanza el orquestador (3.ª columna de roles.yml).
+# Igual que role_spec: primero el roles.yml del proyecto y, si el rol no está ahí, el de bk. Sin modo: bk.
+# bk sound [on|off|test|status]: un sonido por tipo de pedido de los agentes (lo toca el hook de estado)
+cmd_sound() {
+  local f="${BK_CONFIG_DIR:-$HOME/.config/bk}/sound" c
+  case "$1" in
+    on)     mkdir -p "$(dirname "$f")"; echo on >"$f"; info "sonidos prendidos" ;;
+    off)    mkdir -p "$(dirname "$f")"; echo off >"$f"; info "sonidos apagados" ;;
+    test)   for c in "working done" "working waiting question" "working waiting permission" "working error"; do
+              # shellcheck disable=SC2086
+              set -- $c; printf '  %s\n' "$(BK_SOUND_DRY=1 bash "$WS/lib/agent_sound.sh" "$@")"
+              bash "$WS/lib/agent_sound.sh" "$@"; sleep 1.2
+            done ;;
+    status) if [ "$(cat "$f" 2>/dev/null)" = off ]; then echo apagados; else echo prendidos; fi ;;
+    *) die "bk sound [on|off|test]" ;;
+  esac
+}
+
+role_mode() {
+  local role="$1" root="${2:-}" f mode="" found=0
+  # El rol va dentro de una regex: solo nombres de rol, nada que sed o grep interpreten
+  [[ "$role" =~ ^[A-Za-z0-9_-]+$ ]] || die "rol inválido: '$role'"
+  for f in ${root:+"$root/.barrilete/roles.yml"} "$WS/roles.yml"; do
+    [ -f "$f" ] || continue
+    grep -qE "^[[:space:]]*${role}:" "$f" || continue
+    found=1
+    mode=$(sed -nE "s/^[[:space:]]*${role}:[[:space:]]*[^#[:space:]]+[[:space:]]+(main|bk|sub)([[:space:]#].*)?$/\1/p" "$f" | head -1)
+    break
+  done
+  [ "$found" = 1 ] || die "el rol '$role' no está en roles.yml"
+  printf '%s' "${mode:-bk}"
+}
+
 roles() {
   local root; root=$(git rev-parse --show-toplevel 2>/dev/null || true)
   for r in planner orchestrator implementer implementer-light reviewer; do
-    printf '%-18s %s\n' "$r" "$(role_spec "$r" "$root")"
+    printf '%-18s %-16s %s\n' "$r" "$(role_spec "$r" "$root")" "$(role_mode "$r" "$root")"
   done
 }
 
@@ -697,6 +827,8 @@ case "${1:-}" in
   watch)       shift; watch "${1:-}" ;;
   stop)        shift; stop "${1:-}" ;;
   roles)       roles ;;
+  mode)        shift; [ -n "${1:-}" ] || die "bk mode <rol>"
+               role_mode "$1" "$(git rev-parse --show-toplevel 2>/dev/null || true)"; echo ;;
   tokens)      exec python3 "$WS/lib/usage.py" ;;
   ""|ws)       shift || true; workspace "${1:-}" ;;
   open)        shift; cmd_open "${1:-}" ;;
@@ -704,6 +836,10 @@ case "${1:-}" in
   _prs)        cmd_prs ;;
   rail)        exec python3 "$WS/lib/rail.py" ;;
   sidebar)     exec python3 "$WS/lib/sidebar.py" ;;
+  term|t)      shift; ws_term "${1:-$PWD}" ;;
+  sub)         shift; exec python3 "$WS/lib/subwatch.py" "$@" ;;
+  sound)       shift; cmd_sound "${1:-status}" ;;
+  song)        shift; exec "$WS/lib/song.sh" "$@" ;;
   _nth)        tmux list-sessions -F '#{session_created} #{session_name}' 2>/dev/null \
                  | awk '$2 ~ /^bk/' | sort -n | awk -v n="${2:-1}" 'NR == n {print $2}' ;;
   changes)     exec python3 "$WS/lib/changes.py" ;;
