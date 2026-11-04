@@ -1,10 +1,11 @@
 """Tests de las vistas en Python: anchos con color, estados de la tira, el humor de Barrilete y stats."""
-import json, os, re, sys, tempfile, unittest
+import json, os, re, sys, tempfile, time, unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib"))
 os.environ.setdefault("BK_STATE_DIR", tempfile.mkdtemp())
 os.environ["BK_TASKS_DIR"] = tempfile.mkdtemp()   # nunca tus tareas reales
 os.environ["BK_CACHE_DIR"] = tempfile.mkdtemp()   # ni tu caché de títulos
+os.environ["BK_CONFIG_DIR"] = tempfile.mkdtemp()  # ni tu configuración (el sonido del monitor)
 import gentle as G          # noqa: E402
 import rail                 # noqa: E402
 import sidebar              # noqa: E402
@@ -187,3 +188,101 @@ class Tareas(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MonitorVista(unittest.TestCase):
+    """bk monitor: qué te espera arriba, agentes y chats separados con encabezados, tareas, desvíos agrupados y leyenda."""
+
+    def setUp(self):
+        os.environ["BK_TASKS_DIR"] = tempfile.mkdtemp()
+        os.environ["BK_MONITOR_DRY"] = "1"
+        import monitor as M
+        self.M = M
+        self.mon = M.Monitor()
+        self.mon.events = []
+
+    def agente(self, **kw):
+        a = {"win": "i9", "pane": "%1", "kind": "i", "num": "9", "ref": "", "pr": "", "title": "Algo", "project": "kit",
+             "role": "implementer", "model": "sonnet", "state": "working", "asks": False, "why": "", "question": "",
+             "mins": 2, "subs": [], "note": "", "queued": 0, "_cost": 1.5, "_tool": "Bash"}
+        a.update(kw)
+        return a
+
+    def texto(self, lines=60):
+        return STRIP.sub("", "\n".join(self.M.frame(self.mon, 150, lines, 0, "agents", 0, None)))
+
+    def test_te_esperan_arriba_con_como_contestar(self):
+        self.mon.agents = [self.agente(), self.agente(win="pr7", kind="pr", state="done", asks=True, why="te pregunta",
+                                                   question="¿La publico?")]
+        t = self.texto()
+        self.assertIn("Te esperan", t)
+        self.assertLess(t.index("Te esperan"), t.index("Agentes"))
+        self.assertIn("«¿La publico?»", t)
+        self.assertIn('bk say pr7 "…"', t)
+        self.assertIn("1 te espera", t.splitlines()[0])
+
+    def test_nadie_te_espera_y_sin_tarjeta(self):
+        self.mon.agents = [self.agente()]
+        t = self.texto()
+        self.assertNotIn("Te esperan", t)
+        self.assertIn("nadie te espera", t.splitlines()[0])
+        self.assertIn("1 agente (1 trabajando) · 0 chats", t.splitlines()[0])
+
+    def test_reviewer_propuesto(self):
+        d, _ = TK.create("kit", "pr41-reviewer", "reviewer", pr=41, pending=True, origin="40-implementer")
+        self.mon.agents, self.mon.proposals = [], [TK.read(d)]
+        t = self.texto()
+        self.assertIn("reviewer propuesto", t)
+        self.assertIn("bk approve pr41-reviewer", t)
+
+    def test_agentes_y_chats_separados_con_encabezados(self):
+        self.mon.agents = [self.agente(), self.agente(win="chat:bk-kit", kind="chat", short="kit", title="Plan", role="chat",
+                                                   state="done", _tool="")]
+        t = self.texto()
+        for h in ("AGENTE", "ROL · MODELO", "ESTADO", "HACE", "TAREA", "COSTO HOY", "CHAT", "DE QUÉ"):
+            self.assertIn(h, t)
+        self.assertIn("trabajando · Bash", t)
+        self.assertLess(t.index("Agentes"), t.index("Chats"))
+
+    def test_tarea_cerrada_y_cola(self):
+        d, _ = TK.create("kit", "9-implementer", "implementer", window="i9")
+        with open(os.path.join(d, "queue.jsonl"), "w") as f:
+            f.write('{"msg": "hola"}\n')
+        self.mon.agents, self.mon.task_list = [self.agente()], TK.tasks()
+        self.mon.tasks_by_win = AG.task_by_window()
+        t = self.texto()
+        self.assertIn("en curso ✉1", t)
+        TK.close(d, "incomplete")
+        self.mon.agents = [self.agente(note="terminó sin bk done")]
+        self.mon.task_list, self.mon.tasks_by_win = TK.tasks(), AG.task_by_window()
+        t = self.texto()
+        self.assertIn("⚠ sin bk done", t)
+        self.assertIn("terminó", t)
+        self.assertIn("task.incomplete", t)
+
+    def test_tareas_archivadas_no_se_repiten(self):
+        a, _ = TK.create("kit", "9-implementer", "implementer", window="i9")
+        TK.close(a, "incomplete")
+        TK.create("kit", "9-implementer", "implementer", window="i9")
+        self.mon.agents, self.mon.task_list = [], TK.tasks()
+        t = self.texto()
+        self.assertEqual(t.count("9-implementer"), 1)
+
+    def test_desvios_agrupados(self):
+        now = time.time()
+        self.mon.events = [{"ts": now - 60 * i, "type": "guardrail_block", "who": "i9", "detail": f"d{i}"} for i in range(3)]
+        self.mon.events.append({"ts": now - 600, "type": "interrupt", "who": "i9", "detail": "x"})
+        self.mon.events.sort(key=lambda e: e["ts"])
+        self.mon.agents = []
+        t = self.texto()
+        self.assertIn("bloqueado por una baranda ×3", t)
+        self.assertIn("lo interrumpiste", t)
+        self.assertIn("QUIÉN", t)
+
+    def test_leyenda_y_que_entra_en_pantalla(self):
+        self.mon.agents = [self.agente(win=f"i{i}") for i in range(30)]
+        lines = self.M.frame(self.mon, 150, 40, 0, "agents", 0, None)
+        self.assertLessEqual(len(lines), 40)
+        self.assertIn("te pregunta", STRIP.sub("", lines[-2]))   # la leyenda
+        self.assertIn("q salir", STRIP.sub("", lines[-1]))
+        self.assertTrue(all(G.vlen(l) <= 150 for l in lines))

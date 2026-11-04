@@ -47,7 +47,7 @@ uso: bk [comando] [--dry-run]
   go <agente>       saltar a un agente. <agente>: la ventana (i42, pr57), un número (#240) o una palabra del título
   changes           lo que los agentes dejaron sin commitear, con diff (alt+g)
   palette | k       todos los comandos con búsqueda (alt+k)
-  monitor           pantalla para el otro monitor: agentes, costo y desvíos en vivo (los graves suenan)
+  monitor           pantalla para el otro monitor: qué te espera, agentes, tareas, costo y desvíos en vivo (los graves suenan)
   stats             estadísticas de uso: actividad, modelos, rachas, costo (alt+u)
   customize         estilo del workspace: tarjetas float/neon, densidad, header, tema (alt+,)
   s                 sesiones de Claude estilo Orca: abiertas (saltar) y recientes de todas las

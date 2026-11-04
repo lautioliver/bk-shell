@@ -63,8 +63,10 @@ quedó sin commitear, en una sola sesión de tmux.
   abrirlo); si no, como lo renombraste con `/rename` o con el título que le puso Claude. `bk ls` los lista con sus
   subagentes, `bk go orquestador` te lleva y `bk say orquestador "…"` le escribe. `bk sub <palabra>` sigue al
   subagente vivo cuya descripción la contiene.
-- **Monitor**: `bk monitor` es una pantalla para dejar abierta en otro monitor. Muestra a todos los agentes y chats
-  (título, estado, herramienta, costo de hoy, subagentes) y los desvíos en vivo: bloqueos de hooks y barandas,
+- **Monitor**: `bk monitor` es una pantalla para dejar abierta en otro monitor. Arriba, **Te esperan**: preguntas,
+  permisos y reviewers propuestos, con el comando para contestar (`bk say …`, `bk approve …`). Después los agentes y
+  los chats en tablas separadas (estado en palabras, herramienta, hace cuánto, tarea, costo de hoy, subagentes), las
+  **tareas** (estado, cómo cerró, último evento, `bk say` en cola) y los desvíos en vivo, agrupados (×N): bloqueos de hooks y barandas,
   `red.sh`/`verify.py` que fallan, correcciones e interrupciones tuyas, permisos rechazados, agentes trabados, el mismo
   error repetido, force push, otra credencial, «CI en verde» con el CI rojo y decisiones que te atribuyen. Los graves
   suenan (Hero, fuerte) y notifican una vez. `enter` muestra la pantalla de un agente, `tab` + `d` el detalle de un desvío.
@@ -116,7 +118,7 @@ bk s               # todas tus sesiones de Claude, para saltar o retomar
 bk chat --rama login  # otro chat del proyecto en su worktree y rama (chat/login)
 bk sub             # los subagentes vivos, para seguir uno en vivo
 bk say "sí"        # al agente que te espera (o: bk say 240 "…", bk say glosario "…")
-bk monitor         # en el otro monitor: agentes, costo y desvíos en vivo
+bk monitor         # en el otro monitor: qué te espera, agentes, tareas, costo y desvíos en vivo
 bk sound off       # sin sonidos (on, test)
 bk song cachengue  # radio de fondo (rock, reggaeton, techno, house; bk song help)
 bk help            # todo lo demás

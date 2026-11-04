@@ -7,6 +7,8 @@
             agente trabado, el mismo error repetido, force push, otra credencial, "CI en verde" con el CI rojo,
             y atribuirte una decisión. Los graves (⚠) suenan y notifican una vez.
   Hoy       costo del día por modelo y desvíos de hoy contra el promedio de la semana
+  Te esperan / Tareas  lo que necesita tu respuesta (preguntas, permisos, reviewers propuestos) y las tareas de
+            los agentes: estado, cómo cerraron, el último evento y los bk say en cola
 
 Teclas: ↑↓ elegir agente · enter ver su pantalla · tab pasar a los desvíos · d detalle · s sonido on/off (al prenderlo suena) · q salir
 Suenan solo los graves (⚠): force push, otra credencial, CI en verde falso, el mismo error repetido y agente trabado 20 min.
@@ -29,6 +31,7 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, HERE)
 import agents as AG  # noqa: E402
 import gentle as G   # noqa: E402
+import tasks as TK   # noqa: E402  (tareas de los agentes, ADR-005 del kit)
 from gentle import AMBER, BOLD, GREEN, IRIS, MUTED, PETAL, RED, ROSE, RST, TEXT  # noqa: E402
 
 try:
@@ -217,6 +220,7 @@ class Monitor:
         self.ci_cache = {}       # pr → (ts, rojo?)
         self.stale_seen = set()
         self.agents = []
+        self.task_list, self.tasks_by_win, self.proposals = [], {}, []
         self.today = {}
         self.week_avg = 0.0
         self.last_today = 0
@@ -275,6 +279,13 @@ class Monitor:
 
     def refresh(self):
         self.agents = AG.gather(fetch_titles=False, look=True)
+        self.task_list = []
+        try:
+            self.task_list = TK.tasks()
+        except Exception:   # una carpeta de tareas rota no puede tirar el monitor
+            pass
+        self.tasks_by_win = AG.task_by_window()
+        self.proposals = [t for t in self.task_list if t.get("status") == "pending"]
         live = set()
         for a in self.agents:
             who = a.get("short") if a["kind"] == "chat" else a["win"]
@@ -332,50 +343,194 @@ def money(x):
     return f"${x:,.2f}" if x >= 0.005 else "-"
 
 
+def ago(mins):
+    """3m · 2h · 1d: cuánto hace del último evento."""
+    mins = max(0, int(mins or 0))
+    return f"{mins}m" if mins < 60 else (f"{mins // 60}h" if mins < 1440 else f"{mins // 1440}d")
+
+
+def since(iso):
+    """Minutos desde un ISO 8601 en UTC (los ts de las tareas)."""
+    t = epoch(iso) if iso else 0
+    return int((now() - t) // 60) if t else 0
+
+
+def name_of(a):
+    return a.get("short") if a["kind"] == "chat" else a["win"]
+
+
+def state_of(a, mon=None):
+    """(glifo, color, texto) del estado de un agente o chat, en palabras: qué está pasando, no qué herramienta usa."""
+    if a.get("note"):    # su tarea ya cerró: eso manda sobre el estado viejo del pane
+        g = a["note"][:1] if a["note"][:1] in "✓⚠✕" else "✓"
+        return g, (AMBER if g == "⚠" else RED if g == "✕" else MUTED), "terminó"
+    if a["asks"]:
+        if a["why"] == "pide permiso":
+            return "!", RED, "pide permiso"
+        return "?", AMBER, a["why"] or "te pregunta"
+    if a["state"] == "waiting":
+        return "!", RED, a["why"] or "te espera"
+    if a["state"] == "working":
+        if a.get("mins", 0) * 60 >= STALE_WARN:
+            return "⚠", AMBER, f"¿trabado? {ago(a['mins'])} quieto"
+        return "●", GREEN, "trabajando"
+    if a["state"] == "background":
+        return "◐", IRIS, "en 2º plano"
+    if a["kind"] == "chat":
+        return "◇", MUTED, {"done": "listo", "idle": "libre"}.get(a["state"], a["state"] or "sin estado")
+    return "○", MUTED, {"done": "listo", "idle": "libre"}.get(a["state"], a["state"] or "sin estado")
+
+
+def task_cell(t, queued=0):
+    """La tarea en pocas letras: en curso / esperando / ✓ PR #12 / ⚠ sin bk done, más ✉N si hay bk say en cola."""
+    if not t:
+        return f"{MUTED}-{RST}"
+    st = t.get("status")
+    note = AG.task_note(t)
+    if note:
+        g, txt = note
+        txt = {"terminó sin bk done": "sin bk done", "cerró con PR": "PR"}.get(txt, txt).replace("cerró con ", "")
+        col = AMBER if g == "⚠" else RED if g == "✕" else GREEN
+        cell = f"{col}{g} {txt}{RST}"
+    else:
+        cell = {"in_progress": f"{GREEN}en curso{RST}", "waiting": f"{AMBER}esperando{RST}",
+                "pending": f"{AMBER}propuesta{RST}"}.get(st, f"{MUTED}{st or '-'}{RST}")
+    return cell + (f" {PETAL}✉{queued}{RST}" if queued else "")
+
+
+def header_row(cols, W):
+    """Fila de encabezados: [(texto, ancho), …] en gris."""
+    return f"{MUTED}" + "".join(G.fit(t, w) for t, w in cols)[:W] + RST
+
+
+def agent_row(a, W, selected, task, queued):
+    g, col, st = state_of(a)
+    tool = a.get("_tool") if a["state"] == "working" and not a.get("note") and a.get("_tool") else ""
+    who = f"{(a['role'] or '-')[:17]}" + (f" · {a['model'][:8]}" if a.get("model") else "")
+    what = max(12, W - (2 + 15 + 22 + 26 + 6 + 16 + 9))
+    line = (f"{col}{g}{RST} {TEXT}{BOLD}{G.fit(name_of(a), 14)}{RST} {MUTED}{G.fit(who, 21)}{RST} "
+            f"{G.fit(AG.label(a, what - 1), what)}"
+            f"{col}{G.fit(G.cut(st + (f' · {tool}' if tool else ''), 25), 26)}{RST}"
+            f"{MUTED}{ago(a['mins']):>4}{RST}  {G.fit(task_cell(task, queued), 16)}{PETAL}{money(a.get('_cost', 0)):>9}{RST}")
+    line = G.cut(line, W)
+    if selected:
+        line = "\033[7m" + G.ANSI.sub("", line) + RST
+    rows = [line]
+    for d, _ in a.get("subs", []):
+        rows.append(f"    {MUTED}└ subagente: {G.cut(d, W - 18)}{RST}")
+    return rows
+
+
+def chat_row(a, W, selected):
+    g, col, st = state_of(a)
+    tool = a.get("_tool") if a["state"] == "working" and a.get("_tool") else ""
+    what = max(12, W - (2 + 23 + 26 + 6 + 10))
+    line = (f"{col}{g}{RST} {TEXT}{BOLD}{G.fit(name_of(a), 22)}{RST} {G.fit(G.cut(a.get('title') or '(sin nombre)', what - 1), what)}"
+            f"{col}{G.fit(G.cut(st + (f' · {tool}' if tool else ''), 25), 26)}{RST}{MUTED}{ago(a['mins']):>4}{RST}  "
+            f"{PETAL}{money(a.get('_cost', 0)):>9}{RST}")
+    line = G.cut(line, W)
+    if selected:
+        line = "\033[7m" + G.ANSI.sub("", line) + RST
+    rows = [line]
+    for d, _ in a.get("subs", []):
+        rows.append(f"    {MUTED}└ subagente: {G.cut(d, W - 18)}{RST}")
+    return rows
+
+
 def agent_rows(mon, W, sel):
+    """Las dos tablas de abajo del encabezado: agentes de bk y chats, con encabezados de columna.
+    sel es el índice en mon.agents (la misma lista que recorren ↑↓)."""
+    tks = mon.tasks_by_win
+    ags = [(i, a) for i, a in enumerate(mon.agents) if a["kind"] != "chat"]
+    chats = [(i, a) for i, a in enumerate(mon.agents) if a["kind"] == "chat"]
+    what = max(12, W - (2 + 15 + 22 + 26 + 6 + 16 + 9))
+    arows = [header_row([("  AGENTE", 17), ("ROL · MODELO", 22), ("QUÉ", what), ("ESTADO", 26), ("HACE", 6),
+                         ("TAREA", 16), ("COSTO HOY", 9)], W)] if ags else []
+    for i, a in ags:
+        t = tks.get(a["win"])
+        arows += agent_row(a, W, i == sel, t, AG.queued(t) if t else 0)
+    cwhat = max(12, W - (2 + 23 + 26 + 6 + 10))
+    crows = [header_row([("  CHAT", 25), ("DE QUÉ", cwhat), ("ESTADO", 26), ("HACE", 6), ("COSTO HOY", 9)], W)] if chats else []
+    for i, a in chats:
+        crows += chat_row(a, W, i == sel)
+    return arows or [f"{MUTED}ningún agente de bk ahora (bk run, bk review, bk fix){RST}"], crows
+
+
+def waiting_rows(mon, W):
+    """Lo que necesita tu respuesta, primero: preguntas, permisos y reviewers propuestos (bk approve)."""
     rows = []
-    for i, a in enumerate(mon.agents):
-        name = a.get("short") if a["kind"] == "chat" else a["win"]
-        if len(name) > 12:
-            name = "…" + name[-11:]
-        if a["asks"]:
-            mark, col, st = "?", AMBER, a["why"]
-        elif a["state"] == "working":
-            mark, col, st = "●", GREEN, (a.get("_tool") or "trabajando")
-        elif a["state"] == "background":
-            mark, col, st = "◐", IRIS, "2º plano"
-        elif a["state"] == "waiting":
-            mark, col, st = "!", RED, a["why"] or "te espera"
-        else:
-            mark, col, st = ("◇" if a["kind"] == "chat" else "○"), MUTED, {"done": "listo", "idle": "libre"}.get(a["state"], a["state"] or "-")
-        role = (a["role"] or "")[:11]
-        model = (a["model"] or "").replace("claude-", "")[:8]
-        left = f"{col}{mark}{RST} {TEXT}{BOLD}{name:<12}{RST} {MUTED}{role:<11} {model:<8}{RST} {AG.label(a, 40)}"
-        right = f"{col}{G.cut(st, 18)}{RST}  {MUTED}{a['mins']:>3}m{RST}  {PETAL}{money(a.get('_cost', 0)):>7}{RST}"
-        line = G.lr(left, right, W)
-        if i == sel:
-            line = "\033[7m" + G.ANSI.sub("", line) + RST
-        rows.append(line)
-        for d, _ in a.get("subs", []):
-            rows.append(f"    {MUTED}└ {G.cut(d, W - 8)}{RST}")
-        if a["asks"] and a.get("question"):
-            rows.append(f"    {AMBER}«{G.cut(a['question'], W - 8)}»{RST}")
-    return rows or [f"{MUTED}sin agentes ni chats{RST}"]
+    for a in mon.agents:
+        if a.get("note") or not (a["asks"] or a["state"] == "waiting"):
+            continue
+        g, col, st = state_of(a)
+        q = f" {AMBER}«{G.cut(a['question'], W - 40)}»{RST}" if a.get("question") else ""
+        rows.append(G.cut(f"{col}{g}{RST} {TEXT}{BOLD}{G.fit(name_of(a), 16)}{RST} {col}{st}{RST}{q}"
+                          f" {MUTED}· hace {ago(a['mins'])} · bk say {name_of(a)} \"…\"{RST}", W))
+    for t in mon.proposals:
+        rows.append(G.cut(f"{AMBER}◆{RST} {TEXT}{BOLD}{G.fit(t['id'], 16)}{RST} {AMBER}reviewer propuesto{RST} "
+                          f"{MUTED}({t.get('project', '')}, de {t.get('from', '-')}) · bk approve {t['id']}{RST}", W))
+    return rows
+
+
+def last_event(t):
+    """(tipo, minutos) del último evento de una tarea, sin leer el archivo entero."""
+    try:
+        with open(os.path.join(t["dir"], "events.jsonl"), "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - 4096))
+            lines = [l for l in f.read().splitlines() if l.strip()]
+        e = json.loads(lines[-1]) if lines else {}
+    except (OSError, ValueError, KeyError):
+        return "", 0
+    extra = f" {e['sha'][:7]}" if e.get("sha") else (f" #{e['pr']}" if e.get("pr") else "")
+    return (e.get("type", "") + extra), since(e.get("ts"))
+
+
+def task_rows(mon, W, n):
+    """Las tareas: activas primero, después las que cerraron en las últimas 24 h."""
+    # las vigentes (una relanzada deja la vieja como <id>~<fecha>: esa queda para bk tasks), activas primero y
+    # después las que cerraron en las últimas 24 h, de la más nueva a la más vieja
+    ts = [t for t in mon.task_list if "~" not in os.path.basename(t.get("dir", ""))
+          and (t.get("status") in TK.ACTIVE or since(t.get("closed") or t.get("updated")) < 1440)]
+    ts.sort(key=lambda t: (t.get("status") not in TK.ACTIVE, -epoch(t.get("closed") or t.get("updated") or t.get("created") or "")))
+    if not ts:
+        return [f"{MUTED}sin tareas en las últimas 24 h (las crea bk run, bk review y bk fix){RST}"]
+    rows = [header_row([("  TAREA", 22), ("PROYECTO", 20), ("ESTADO", 18), ("ÚLTIMO EVENTO", 26), ("HACE", 6)], W)]
+    for t in ts[:n]:
+        ev, mins = last_event(t)
+        rows.append(G.cut(f"  {TEXT}{BOLD}{G.fit(t['id'], 20)}{RST}{MUTED}{G.fit(t.get('project', ''), 20)}{RST}"
+                          f"{G.fit(task_cell(t, AG.queued(t)), 18)}{MUTED}{G.fit(ev, 26)}{ago(mins):>4}{RST}", W))
+    if len(ts) > n:
+        rows.append(f"  {MUTED}… y {len(ts) - n} más (bk tasks){RST}")
+    return rows
+
+
+def grouped(events):
+    """Los desvíos más nuevos primero, juntando seguidos los del mismo tipo y del mismo agente (×N)."""
+    out = []
+    for e in reversed(events):
+        if out and out[-1]["type"] == e["type"] and out[-1]["who"] == e["who"] and out[-1]["ts"] - e["ts"] < 1800:
+            out[-1]["n"] += 1
+            continue
+        out.append(dict(e, n=1))
+    return out
 
 
 def event_rows(mon, W, n, sel=None):
-    rows = []
-    evs = list(reversed(mon.events))[:n]
+    rows = [header_row([("HORA ", 6), ("  QUIÉN", 25), ("QUÉ", 30), ("DETALLE", 40)], W)]
+    evs = grouped(mon.events)[:n]
     for i, e in enumerate(evs):
         txt, col = TYPE_UI.get(e["type"], (e["type"], MUTED))
         grave = e["type"] in GRAVE_TYPES
         mark = f"{RED}⚠{RST}" if grave else f"{col}•{RST}"
-        line = f"{MUTED}{hhmm(e['ts'])}{RST} {mark} {TEXT}{BOLD}{G.cut(e['who'], 10):<10}{RST} {col}{txt}{RST} {MUTED}{e['detail']}{RST}"
+        times = f" {BOLD}×{e['n']}{RST}" if e["n"] > 1 else ""
+        line = (f"{MUTED}{hhmm(e['ts'])}{RST} {mark} {TEXT}{BOLD}{G.fit(G.cut(e['who'], 22), 23)}{RST}"
+                f"{col}{G.fit(txt + times, 30)}{RST}{MUTED}{e['detail']}{RST}")
         line = G.cut(line, W)
         if sel is not None and i == sel:
             line = "\033[7m" + G.ANSI.sub("", line) + RST
         rows.append(line)
-    return rows or [f"{MUTED}sin desvíos todavía hoy{RST}"]
+    return rows if evs else [f"{GREEN}sin desvíos todavía hoy{RST}"]
 
 
 def today_rows(mon, W):
@@ -393,21 +548,43 @@ def today_rows(mon, W):
     top = max(mon.agents, key=lambda a: a.get("_cost", 0), default=None)
     if top and top.get("_cost", 0) > 0:
         rows.append("")
-        nm = top.get("short") if top["kind"] == "chat" else top["win"]
-        rows.append(G.lr(f"{TEXT}más caro{RST} {MUTED}{G.cut(nm, 14)}{RST}", f"{PETAL}{money(top['_cost'])}{RST}", W))
+        rows.append(G.lr(f"{TEXT}más caro{RST} {MUTED}{G.cut(name_of(top), 14)}{RST}", f"{PETAL}{money(top['_cost'])}{RST}", W))
     return rows
+
+
+LEGEND = (f" {GREEN}●{RST} trabajando  {AMBER}?{RST} te pregunta  {RED}!{RST} pide permiso  {IRIS}◐{RST} 2º plano  "
+          f"{MUTED}○{RST} listo  {MUTED}◇{RST} chat  {GREEN}✓{RST}/{AMBER}⚠{RST}/{RED}✕{RST} cómo cerró  {PETAL}✉{RST} bk say en cola")
+
+
+def headline(mon):
+    ags = [a for a in mon.agents if a["kind"] != "chat"]
+    chats = [a for a in mon.agents if a["kind"] == "chat"]
+    busy = sum(1 for a in ags if a["state"] in ("working", "background") and not a.get("note"))
+    waits = sum(1 for a in mon.agents if not a.get("note") and (a["asks"] or a["state"] == "waiting")) + len(mon.proposals)
+    parts = [f"{len(ags)} agente{'s' if len(ags) != 1 else ''}" + (f" ({busy} trabajando)" if busy else ""),
+             f"{len(chats)} chat{'s' if len(chats) != 1 else ''}"]
+    parts.append(f"{AMBER}{BOLD}{waits} te espera{'n' if waits != 1 else ''}{RST}{MUTED}" if waits else f"{GREEN}nadie te espera{RST}{MUTED}")
+    parts += [f"{money((mon.today or {}).get('cost_usd', 0))} hoy", f"sonido {'on' if sound_on() else 'off'}"]
+    return f" {ROSE}✿{RST} {BOLD}bk monitor{RST} {MUTED}· {time.strftime('%H:%M:%S')} · " + " · ".join(parts) + RST
 
 
 def frame(mon, cols, lines, sel, focus, esel, overlay):
     W = cols
-    head = (f" {ROSE}✿{RST} {BOLD}bk monitor{RST} {MUTED}· {time.strftime('%H:%M:%S')} · "
-            f"{sum(1 for a in mon.agents if a['kind'] != 'chat')} agentes · {money((mon.today or {}).get('cost_usd', 0))} hoy · "
-            f"sonido {'on' if sound_on() else 'off'}{RST}")
-    out = [G.cut(head, W), ""]
+    out = [G.cut(headline(mon), W), ""]
     if overlay:
         out += G.card(overlay[0], [G.cut(l, W - 6) for l in overlay[1]][-(lines - 6):], W, glyph="▸")
         return out[:lines - 1] + [f" {MUTED}esc vuelve{RST}"]
-    out += G.card("Agentes", agent_rows(mon, W - 6, sel if focus == "agents" else -1), W, glyph="∗")
+    wait = waiting_rows(mon, W - 6)
+    if wait:
+        out += G.card("Te esperan", wait, W, glyph="?", color=AMBER)
+    arows, crows = agent_rows(mon, W - 6, sel if focus == "agents" else -1)
+    out += G.card("Agentes", arows, W, glyph="∗")
+    if crows:
+        out += G.card("Chats", crows, W, glyph="◇")
+    # las tareas y los desvíos se reparten lo que queda (al menos 3 filas cada uno)
+    room = max(6, lines - len(out) - 3)
+    n_tasks = max(2, min(len(mon.task_list) or 1, room // 3))
+    out += G.card("Tareas", task_rows(mon, W - 6, n_tasks), W, glyph="◆")
     left_w = max(40, int(W * 0.66)) if W >= 100 else W
     room = max(4, lines - len(out) - 6)
     devs = G.card("Desvíos en vivo", event_rows(mon, left_w - 6, room, esel if focus == "events" else None),
@@ -420,8 +597,8 @@ def frame(mon, cols, lines, sel, focus, esel, overlay):
             out.append(G.fit(l, left_w) + " " + r)
     else:
         out += devs + G.card("Hoy", today_rows(mon, W - 6), W, glyph="◆")
-    keys = f" {MUTED}↑↓ agente · enter su pantalla · tab desvíos · d detalle · s sonido · q salir{RST}"
-    return out[:lines - 1] + [keys]
+    keys = f" {MUTED}↑↓ elegir · enter su pantalla · tab desvíos · d detalle · s sonido · q salir{RST}"
+    return out[:lines - 2] + [G.cut(LEGEND, W), keys]
 
 
 def main():
