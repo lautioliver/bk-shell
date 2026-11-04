@@ -46,6 +46,11 @@ quedó sin commitear, en una sola sesión de tmux.
 - **Sonidos**: un sonido por tipo de pedido de los agentes, no por agente: terminó, te pregunta, pide permiso, error
   (en macOS, Glass · Ping · Purr · Basso; en Linux, los de freedesktop si hay `paplay` o `pw-play`). Suena solo cuando
   cambia el estado. `bk sound off` lo apaga, `bk sound test` los hace sonar.
+- **Radio**: `bk song rock` (o techno, house, reggaeton, cachengue) pone una radio en segundo plano con `mpv`;
+  `next`/`prev` pasan de radio dentro del género, `bk song ui` muestra el sonido, los géneros y los últimos temas.
+  `bk song <url>` toca cualquier stream o link de YouTube/SoundCloud (con `yt-dlp`), `bk song fav` guarda la que
+  suena entre tus radios y `bk song hist` lista los temas que sonaron. Cuando suena el aviso de un agente, la radio
+  baja sola y después vuelve a su volumen.
 - **Subagentes a la vista**: los subagentes vivos de un chat o agente (herramienta Agent) aparecen como `└` debajo de él
   en la tira y con su descripción en el riel. Clic en el `└` (o `bk sub`) sigue su sesión en vivo, de solo lectura.
 - **Overlays**: `alt+a` agentes en vivo · `alt+g` cambios (worktrees y diff) · `alt+k` comandos · `alt+s` sesiones
@@ -60,6 +65,7 @@ quedó sin commitear, en una sola sesión de tmux.
 - [Claude Code](https://claude.com/claude-code) (`claude`)
 - Opcional: [`gh`](https://cli.github.com) para PRs y checks; un proyecto con [Barrilete Kit](https://github.com/lautioliver/barrilete-kit)
   para `run`, `review`, `fix`, `plan` y `orchestrate` (el workspace, las sesiones y las stats andan en cualquier repo)
+- Opcional para `bk song`: `mpv` (y `yt-dlp` para links de YouTube o SoundCloud)
 
 ## Instalar
 
@@ -88,6 +94,7 @@ bk s               # todas tus sesiones de Claude, para saltar o retomar
 bk chat --rama login  # otro chat del proyecto en su worktree y rama (chat/login)
 bk sub             # los subagentes vivos, para seguir uno en vivo
 bk sound off       # sin sonidos (on, test)
+bk song cachengue  # radio de fondo (rock, reggaeton, techno, house; bk song help)
 bk help            # todo lo demás
 ```
 

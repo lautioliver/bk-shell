@@ -16,6 +16,6 @@ jobs:
           if [ "$RUNNER_OS" = macOS ]; then brew install jq tmux shellcheck
           else sudo apt-get update -q && sudo apt-get install -y -q jq tmux shellcheck lsof; fi
       - name: shellcheck (errores)
-        run: shellcheck -S error bin/bk install.sh hooks/agent_state.sh tests/*.sh
+        run: shellcheck -S error bin/bk install.sh hooks/agent_state.sh lib/*.sh tests/*.sh
       - name: tests
         run: bash tests/run.sh

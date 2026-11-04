@@ -67,4 +67,23 @@ if command -v tmux >/dev/null; then
   TMUX_TMPDIR="$T" tmux kill-session -t "=$sess" 2>/dev/null
 fi
 
+# bk song sin red ni mpv: géneros, tus radios y validaciones (no reproduce nada)
+SG="$ROOT/lib/song.sh"; export BK_SONG_CACHE="$TMP/song" BK_CONFIG_DIR="$TMP/songconf"
+check_eq "$("$SG" genres | tr '\n' ' ')" "techno house rock reggaeton cachengue " "bk song: los cinco géneros de fábrica"
+check_eq "$("$SG" stations | awk -F'\t' '$3 == "cachengue"' | wc -l | tr -d ' ')" 3 "bk song: tres radios de cachengue"
+"$SG" add mia https://example.com/a.mp3 fiesta Mi Radio >/dev/null; check $? "bk song add guarda una radio"
+check_eq "$("$SG" stations | head -1)" "mia	Mi Radio	fiesta" "bk song: tus radios van primero, con su género"
+check_eq "$("$SG" genres | head -1)" fiesta "bk song: un género tuyo aparece primero en genres"
+"$SG" add mia https://example.com/b.mp3 fiesta >/dev/null
+check_eq "$(grep -c '^mia|' "$BK_CONFIG_DIR/song-stations")" 1 "bk song add con la misma clave la reemplaza"
+"$SG" add 'Mal!' https://x >/dev/null 2>&1; [ $? -ne 0 ]; check $? "bk song add rechaza una clave inválida"
+"$SG" add ok 'ftp://x' >/dev/null 2>&1; [ $? -ne 0 ]; check $? "bk song add rechaza una url que no es http(s)"
+"$SG" add ok 'https://x|y' >/dev/null 2>&1; [ $? -ne 0 ]; check $? "bk song add rechaza una url con |"
+"$SG" rm mia >/dev/null; check $? "bk song rm saca una radio tuya"
+"$SG" rm techno >/dev/null 2>&1; [ $? -ne 0 ]; check $? "bk song rm no saca una de fábrica"
+"$SG" list nada >/dev/null 2>&1; [ $? -ne 0 ]; check $? "bk song list con un género que no existe falla"
+check_eq "$("$SG" bar-status)" "off		" "bk song bar-status sin música: off"
+"$SG" now >/dev/null 2>&1; [ $? -ne 0 ]; check $? "bk song now sin música falla con un mensaje"
+unset BK_SONG_CACHE BK_CONFIG_DIR
+
 finish

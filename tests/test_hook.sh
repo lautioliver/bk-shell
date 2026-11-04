@@ -79,4 +79,18 @@ mkdir -p "$TMP/config"; echo off > "$TMP/config/sound"
 ev '{"session_id":"s9","hook_event_name":"UserPromptSubmit","cwd":"/tmp/p"}'
 check_eq "$(snd '{"session_id":"s9","hook_event_name":"Stop","cwd":"/tmp/p"}')" "" "con bk sound off no suena"
 
+# Con la radio de bk song sonando, el aviso la baja al 35% y después la deja como estaba;
+# dos avisos juntos no guardan el volumen ya bajado como el original
+if command -v nc >/dev/null; then
+  SC="$TMP/songcache"; mkdir -p "$SC"
+  python3 "$HERE/fake_mpv.py" "$SC/song.sock" "$TMP/vols" 80 & FAKE=$!
+  for _ in 1 2 3 4 5 6 7 8 9 10; do [ -S "$SC/song.sock" ] && break; sleep 0.1; done
+  ( unset BK_SOUND_DRY; export BK_SONG_CACHE="$SC" BK_SOUND_PLAYER="sleep 0.4" BK_CONFIG_DIR="$TMP/config-on"
+    bash "$ROOT/lib/agent_sound.sh" working done ""; bash "$ROOT/lib/agent_sound.sh" working waiting question )
+  for _ in $(seq 1 30); do [ "$( { wc -l < "$TMP/vols"; } 2>/dev/null | tr -d ' ')" = 2 ] && [ ! -d "$SC/song.duck" ] && break; sleep 0.1; done
+  check_eq "$(tr '\n' ' ' < "$TMP/vols" 2>/dev/null)" "28 80 " "un aviso baja la radio al 35% y la vuelve a 80"
+  [ ! -d "$SC/song.duck" ]; check $? "el candado de la radio se libera"
+  kill "$FAKE" 2>/dev/null; wait "$FAKE" 2>/dev/null
+fi
+
 finish

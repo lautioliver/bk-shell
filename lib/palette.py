@@ -30,6 +30,17 @@ ENTRIES = [
     ("Sesión", "Lista de agentes", "ls", None, "show"),
     ("Sesión", "Tokens y costo de hoy", "tokens", None, "show"),
     ("Sesión", "Roles y modelos", "roles", None, "show"),
+    ("Música", "Radio (pantalla)", "song ui", None, "view"),
+    ("Música", "Pausa / seguir", "song pause", None, "show"),
+    ("Música", "Siguiente estación", "song next", None, "show"),
+    ("Música", "Rock", "song rock", None, "show"),
+    ("Música", "Reggaeton", "song reggaeton", None, "show"),
+    ("Música", "Cachengue", "song cachengue", None, "show"),
+    ("Música", "Techno", "song techno", None, "show"),
+    ("Música", "House", "song house", None, "show"),
+    ("Música", "Guardar la radio que suena", "song fav", None, "show"),
+    ("Música", "Últimos temas", "song hist", None, "show"),
+    ("Música", "Cortar la música", "song stop", None, "show"),
 ]
 
 

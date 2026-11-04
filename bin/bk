@@ -53,6 +53,7 @@ uso: bk [comando] [--dry-run]
   stop <ventana>    cerrar la ventana del agente (el worktree queda)
   roles             qué provider/modelo corre cada rol en este proyecto, y su modo
   sound [on|off|test]  sonido por tipo de pedido de los agentes: terminó, pregunta, permiso, error
+  song [género]     radio por género (techno, house, rock, reggaeton, cachengue), tuya o cualquier url (bk song help)
   mode <rol>        cómo lo lanza el orquestador: main (la sesión principal), bk (ventana propia) o
                     sub (subagente); 3.ª columna de roles.yml, bk si no tiene
   sub [transcript]  ver en vivo un subagente, solo lectura (sin argumento: elegir de los vivos); también
@@ -838,6 +839,7 @@ case "${1:-}" in
   term|t)      shift; ws_term "${1:-$PWD}" ;;
   sub)         shift; exec python3 "$WS/lib/subwatch.py" "$@" ;;
   sound)       shift; cmd_sound "${1:-status}" ;;
+  song)        shift; exec "$WS/lib/song.sh" "$@" ;;
   _nth)        tmux list-sessions -F '#{session_created} #{session_name}' 2>/dev/null \
                  | awk '$2 ~ /^bk/' | sort -n | awk -v n="${2:-1}" 'NR == n {print $2}' ;;
   changes)     exec python3 "$WS/lib/changes.py" ;;
