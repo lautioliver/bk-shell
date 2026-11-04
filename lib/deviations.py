@@ -125,6 +125,7 @@ RISK_HINTS = ("git push", "gh auth", "GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN"
               "indicaste", "you decided", "you approved", "you asked", "per your")
 
 
+ASSIGN = re.compile(r"(?:\balias\s+)?\b[A-Za-z_][A-Za-z0-9_]*=$")
 HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
 
 
@@ -170,6 +171,15 @@ def shell_part(cmd):
                 i = j - 1
         else:
             if ch in "'\"":
+                # el valor de una asignación (G="env -u GH_CONFIG_DIR gh"; $G …) o de un alias suele ejecutarse
+                # después: se conserva entero
+                m = ASSIGN.search(text, max(0, i - 80), i)
+                if m and m.end() == i:
+                    j = text.find(ch, i + 1)
+                    j = len(text) if j < 0 else j
+                    res.append(" " + text[i + 1:j] + " ")
+                    i = j + 1
+                    continue
                 q = ch
             res.append(ch)
         i += 1

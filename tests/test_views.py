@@ -448,7 +448,8 @@ class Detectores(unittest.TestCase):
     def test_credencial_y_force_push_en_lo_que_corre(self):
         for c in ("gh auth login", "cd x && env -u GH_CONFIG_DIR gh pr list | head", "(unset GH_CONFIG_DIR; gh api user)",
                   "f() { gh auth token; }; f", "bash -c 'gh auth login'", "eval 'unset GH_CONFIG_DIR'",
-                  'X="$(gh auth token)" make', 'X="`gh auth token`"', "GH_TOKEN=abc gh pr view"):
+                  'X="$(gh auth token)" make', 'X="`gh auth token`"', "GH_TOKEN=abc gh pr view",
+                  'G="env -u GH_CONFIG_DIR -u GH_TOKEN gh"; $G issue list', "alias g='env -u GH_CONFIG_DIR gh'; g pr list"):
             self.assertTrue(self.D.is_credential(c), c)
         for c in ("python3 - <<'EOF'\nrep('env -u GH_CONFIG_DIR')\nEOF", "printf '%s' '- usa env -u GH_CONFIG_DIR'",
                   'echo "gh auth login es para vos"', "cat <<-EOF > x\n\tunset GH_CONFIG_DIR\n\tEOF\nls",
