@@ -10,6 +10,9 @@
 """
 import curses, glob, json, os, re, shlex, subprocess, sys, time
 
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import agents as AG  # noqa: E402  (nombre de los chats: bk name, /rename o el título de Claude)
+
 TIP_MS = 2500           # cuánto queda el nombre en la barra de tmux al pasar el mouse
 SUB_TTL = 600           # un subagente sin escribir su transcript en 10 min ya no cuenta como vivo
 
@@ -167,7 +170,10 @@ def items():
             pid, cmd, dead, start, title, path = (l.split("\t") + [""] * 6)[:6]
             if "bk rail" in start or "bk sidebar" in start:
                 continue
-            info = (project_name(path), feature(title, path))
+            # el nombre del chat: bk name / --nombre, si no el de /rename o el título que le puso Claude
+            nm = sh("tmux", "show-options", "-qv", "-t", name, "@bk_name").strip() \
+                or AG.session_title((st.get(pid) or {}).get("_sid"))
+            info = (project_name(path), nm or feature(title, path))
             s = pane_state(st, pid, cmd, dead)
             if s != "none":
                 state = s

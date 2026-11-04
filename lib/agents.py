@@ -6,7 +6,11 @@
   agents.py auto                 el único agente que te espera (para `bk say "mensaje"` sin nombre)
   agents.py pick                 selector en la terminal; imprime la ventana elegida
   agents.py waiting [--json]     los que te esperan, con su pregunta
-  agents.py json                 {pane: ventana, título, pregunta} para Sketchybar (sin consultar GitHub)
+  agents.py json                 {pane: ventana, título, pregunta, subagentes} para Sketchybar (sin consultar GitHub)
+  agents.py subs <palabra>       el transcript del subagente vivo cuya descripción coincide (para bk sub)
+
+Los chats de los workspaces (bk-kit-2…) también se nombran: por su nombre (bk name / bk chat --nombre),
+por el de /rename o por el título que les puso Claude. resolve los devuelve como chat:<sesión>.
   agents.py warm                 busca los títulos que falten (bk lo corre al lanzar un agente)
 
 resolve/auto/pick imprimen la ventana en stdout. Si no pueden decidir salen con 3 (varios) o 4 (ninguno)
@@ -22,6 +26,7 @@ import unicodedata
 
 SESSION = os.environ.get("BK_SESSION", "agents")
 STATE_DIR = os.environ.get("BK_STATE_DIR", os.path.expanduser("~/.cache/sketchybar/agents"))
+PROJECTS = os.path.expanduser("~/.claude/projects")
 TITLES = os.path.join(os.environ.get("BK_CACHE_DIR", os.path.expanduser("~/.cache/bk")), "titles.json")
 WIN_RE = re.compile(r"^(?:[\w.-]+-)?(i|pr|f)(\d+)$")   # i218, pr241, f240, abra-i12
 
@@ -138,6 +143,88 @@ def last_question(pane):
     return ""
 
 
+# ---------- sesiones de Claude: título y subagentes ----------
+_TITLE_CACHE = {}
+
+
+def session_title(sid):
+    """El nombre de la sesión de Claude: el de /rename si lo tiene; si no, el que le puso Claude."""
+    if not sid:
+        return ""
+    import glob
+    files = glob.glob(os.path.join(PROJECTS, "*", f"{sid}.jsonl"))
+    if not files:
+        return ""
+    f = files[0]
+    try:
+        mt = os.path.getmtime(f)
+    except OSError:
+        return ""
+    if _TITLE_CACHE.get(f, (None,))[0] == mt:
+        return _TITLE_CACHE[f][1]
+    custom = ai = ""
+    try:
+        with open(f, errors="replace") as fh:
+            for l in fh:
+                if '"custom-title"' in l or '"ai-title"' in l:
+                    try:
+                        e = json.loads(l)
+                    except ValueError:
+                        continue
+                    custom = e.get("customTitle") or custom
+                    ai = e.get("aiTitle") or ai
+    except OSError:
+        pass
+    t = custom or ai
+    _TITLE_CACHE[f] = (mt, t)
+    return t
+
+
+def subagents(sid):
+    """Descripciones de los subagentes vivos de una sesión (herramienta Agent), lo más nuevo primero."""
+    if not sid:
+        return []
+    import glob
+    out, now = [], time.time()
+    for m in glob.glob(os.path.join(PROJECTS, "*", sid, "subagents", "agent-*.meta.json")):
+        j = m[: -len(".meta.json")] + ".jsonl"
+        try:
+            if now - os.path.getmtime(j) > 600:
+                continue
+            meta = json.load(open(m))
+        except (OSError, ValueError):
+            continue
+        if not meta.get("finished"):
+            out.append((os.path.getmtime(j), meta.get("description") or meta.get("agentType") or "subagente", j))
+    return [(d, j) for _, d, j in sorted(out, reverse=True)]
+
+
+def chats(sts):
+    """Los chats de los workspaces (bk-<proyecto>, bk-<proyecto>-2…): {sesión: (pane, nombre)}."""
+    out = {}
+    raw = sh("tmux", "list-sessions", "-F", "#{session_name}")
+    for ws in raw.split():
+        if not ws.startswith("bk"):
+            continue
+        name = sh("tmux", "show-options", "-qv", "-t", ws, "@bk_name").strip()
+        pane = ""
+        for l in sh("tmux", "list-panes", "-t", f"{ws}:main", "-F", "#{pane_id}\t#{pane_start_command}\t#{pane_title}").splitlines():
+            pid, start, title = (l.split("\t") + ["", ""])[:3]
+            if "bk rail" in start or "bk sidebar" in start:
+                continue
+            pane = pid
+            break
+        # si un agente está de visita en el lugar del chat, el chat está en la sesión de agentes (@bk_ws)
+        if sh("tmux", "show-options", "-wqv", "-t", f"{ws}:main", "@bk_guest").strip():
+            for l in sh("tmux", "list-panes", "-s", "-t", SESSION, "-F", "#{pane_id}\t#{@bk_ws}").splitlines():
+                pid, w = (l.split("\t") + [""])[:2]
+                if w == ws:
+                    pane = pid
+        if pane:
+            out[ws] = (pane, name)
+    return out
+
+
 # ---------- agentes ----------
 def windows():
     """{ventana: pane del agente}. Si el agente está de visita en un workspace (alt+shift+N), su pane real."""
@@ -170,13 +257,14 @@ def states():
         except (OSError, ValueError):
             continue
         st["_file"] = n
+        st["_sid"] = n[:-5]
         p = st.get("pane") or ""
         if p and (p not in out or st.get("ts", 0) > out[p].get("ts", 0)):
             out[p] = st
     return out
 
 
-def gather(fetch_titles=True, look=True):
+def gather(fetch_titles=True, look=True, chats_too=True):
     """Lista de agentes de la sesión `agents`, con lo necesario para nombrarlos."""
     titles, sts, now = load_titles(), states(), time.time()
     out = []
@@ -206,7 +294,24 @@ def gather(fetch_titles=True, look=True):
             "mins": int((now - st.get("ts", now)) // 60) if st else 0,
             "project": project_label(cwd),
         })
-    out.sort(key=lambda a: (not a["asks"], a["mins"]))
+    for a in out:
+        a["subs"] = subagents(sts.get(a["pane"], {}).get("_sid"))
+    if chats_too:
+        for ws, (pane, name) in chats(sts).items():
+            st = sts.get(pane, {})
+            state = st.get("state", "")
+            why = ""
+            if state == "waiting":
+                why = {"question": "te pregunta", "permission": "pide permiso"}.get(st.get("wait"), "te espera")
+            title = name or session_title(st.get("_sid"))
+            out.append({
+                "win": "chat:" + ws, "pane": pane, "kind": "chat", "num": "", "ref": "", "pr": "",
+                "title": title, "ws": ws, "short": ws[3:] if ws.startswith("bk-") else ws,
+                "role": "chat", "model": "", "state": state, "asks": bool(why), "why": why, "question": "",
+                "mins": int((now - st.get("ts", now)) // 60) if st else 0,
+                "project": project_label(st.get("cwd") or ""), "subs": subagents(st.get("_sid")),
+            })
+    out.sort(key=lambda a: (a["kind"] == "chat", not a["asks"], a["mins"]))
     return out
 
 
@@ -223,7 +328,9 @@ def short(s, n):
 
 
 def label(a, width=46):
-    """`#240 Agregar las reglas de DDD…` (o el proyecto si no hay número)."""
+    """`#240 Agregar las reglas de DDD…` (o el proyecto si no hay número; el nombre si es un chat)."""
+    if a["kind"] == "chat":
+        return short(a["title"] or "(sin nombre: /rename o bk name)", width)
     n = a["num"] or a["ref"]
     t = a["title"] or a["project"]
     pr = f" (PR #{a['pr']})" if a.get("pr") and a["pr"] != n else ""
@@ -238,23 +345,33 @@ def line(a, i=None, color=True):
         status = {"working": "trabajando", "background": "en segundo plano", "done": "listo",
                   "idle": "libre"}.get(a["state"], a["state"]) + f" {a['mins']}m" if a["state"] else "sin estado"
     num = f"{i:>2}  " if i is not None else ""
+    name = a["short"] if a["kind"] == "chat" else a["win"]
+    if len(name) > 14:   # el final distingue: barrilete-workspace-2 → …workspace-2
+        name = "…" + name[-13:]
+    if a["kind"] == "chat" and not a["asks"]:
+        mark = "◇"
     if not color:
-        return f"{num}{mark} {a['win']:<8} {label(a):<46}  {status}"
+        return f"{num}{mark} {name:<14} {label(a):<46}  {status}"
     col = AMBER if a["asks"] else (GREEN if a["state"] == "working" else DIM)
-    return f"{BOLD}{num}{R}{col}{mark}{R} {BOLD}{a['win']:<8}{R} {label(a):<46}  {col}{status}{R}"
+    return f"{BOLD}{num}{R}{col}{mark}{R} {BOLD}{name:<14}{R} {label(a):<46}  {col}{status}{R}"
+
+
+def sub_lines(a, color=True):
+    """Los subagentes vivos de un agente o chat, debajo de él (no se les escribe: bk sub <palabra> los sigue)."""
+    return [(f"  {DIM}└ {short(d, 60)}{R}" if color else f"  └ {short(d, 60)}") for d, _ in a.get("subs", [])]
 
 
 # ---------- elegir ----------
 def match(agents, q):
     """Agentes que corresponden a <q>: nombre exacto, número (de la ventana o del issue) o palabra."""
-    exact = [a for a in agents if a["win"] == q]
+    exact = [a for a in agents if q in (a["win"], a.get("ws"), a.get("short"))]
     if exact:
         return exact
     n = q.lstrip("#")
     if n.isdigit():
         return [a for a in agents if n in (a["num"], a["ref"], a["pr"])]
     f = fold(q)
-    return [a for a in agents if any(f in fold(a[k]) for k in ("title", "win", "project", "question"))]
+    return [a for a in agents if any(f in fold(a.get(k) or "") for k in ("title", "win", "project", "question"))]
 
 
 def prefer_asking(cands):
@@ -313,13 +430,36 @@ def main():
         if not agents:
             print("sin agentes")
             return
+        tty = sys.stdout.isatty()
+        shown_chat = False
         for a in agents:
-            print(line(a, color=sys.stdout.isatty()))
+            if a["kind"] == "chat" and not shown_chat:
+                print(f"{DIM}chats{R}" if tty else "chats")
+                shown_chat = True
+            print(line(a, color=tty))
+            for l in sub_lines(a, tty):
+                print(l)
         return
 
+    if cmd == "subs":   # bk sub <palabra>: el transcript del subagente que coincide
+        q = fold(" ".join(args[1:]))
+        found = [(d, j) for a in gather(fetch_titles=False, look=False) for d, j in a["subs"] if q in fold(d)]
+        if len(found) == 1:
+            print(found[0][1])
+            return
+        sys.stderr.write(("bk: «%s» corresponde a %d subagentes:\n" % (q, len(found)) if found else
+                          "bk: no hay un subagente vivo con «%s». Los vivos:\n" % q))
+        for a in gather(fetch_titles=False, look=False):
+            for d, _ in (found and [(d, j) for d, j in a["subs"] if (d, j) in found]) or a["subs"]:
+                sys.stderr.write(f"  └ {short(d, 70)}   (de {a.get('short') or a['win']})\n")
+        sys.exit(3 if found else 4)
+
     if cmd == "json":   # para Sketchybar: {pane: {...}} sin consultar GitHub (solo la cache)
-        print(json.dumps({a["pane"]: {"win": a["win"], "label": label(a, 60), "asks": a["asks"], "why": a["why"],
-                                      "question": short(a["question"], 70)} for a in gather(fetch_titles=False)},
+        print(json.dumps({a["pane"]: {"win": a.get("short") if a["kind"] == "chat" else a["win"], "kind": a["kind"],
+                                      "label": label(a, 60), "asks": a["asks"], "why": a["why"],
+                                      "question": short(a["question"], 70),
+                                      "subs": [short(d, 60) for d, _ in a["subs"]]}
+                          for a in gather(fetch_titles=False)},
                          ensure_ascii=False))
         return
 
@@ -349,7 +489,8 @@ def main():
         print(a["win"])
         return
 
-    if cmd == "auto":
+    if cmd == "auto":   # solo agentes: un chat tuyo no se elige solo
+        agents = [a for a in agents if a["kind"] != "chat"]
         asking = [a for a in agents if a["asks"]]
         if len(asking) == 1:
             print(asking[0]["win"])

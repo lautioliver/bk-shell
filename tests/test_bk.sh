@@ -121,4 +121,29 @@ if command -v tmux >/dev/null; then
   check_eq "$(grep '^primero=' "$NT/out")" "primero=? pr241" "bk ls pone primero al que te espera"
 fi
 
+# Chats con nombre: bk say/go por el nombre del chat (bk name o @bk_name), nunca elegidos solos
+if command -v tmux >/dev/null; then
+  CT="$TMP/chats"; mkdir -p "$CT/state" "$CT/tmux"
+  (
+    export TMUX_TMPDIR="$CT/tmux" BK_STATE_DIR="$CT/state" BK_CACHE_DIR="$CT/cache" BK_CLIENT=nocliente; unset TMUX
+    tmux new-session -d -s agents -n i218 "cat > $CT/i218.txt"
+    tmux new-session -d -s bk-kit -n main "cat > $CT/chat1.txt"
+    tmux new-session -d -s bk-kit-2 -n main "cat > $CT/chat2.txt"
+    BK_FROM=bk-kit-2 "$ROOT/bin/bk" name orquestador >/dev/null 2>&1; echo "name=$?"
+    echo "nombre=$(BK_FROM=bk-kit-2 "$ROOT/bin/bk" name)"
+    "$ROOT/bin/bk" say orquestador "hola orq" </dev/null >/dev/null 2>&1; echo "say=$?"
+    "$ROOT/bin/bk" say "a nadie" </dev/null >/dev/null 2>&1; echo "auto=$?"
+    "$ROOT/bin/bk" stop orquestador </dev/null >/dev/null 2>&1; echo "stop=$?"
+    "$ROOT/bin/bk" ls </dev/null | grep -c '◇' | sed 's/^/chats=/'
+    sleep 0.3; tmux kill-server
+  ) > "$CT/out" 2>&1
+  check_eq "$(grep '^name=' "$CT/out")" "name=0" "bk name nombra el chat del workspace"
+  check_eq "$(grep '^nombre=' "$CT/out")" "nombre=orquestador" "bk name sin argumento lo muestra"
+  check_eq "$(cat "$CT/chat2.txt" 2>/dev/null)" "hola orq" "bk say <nombre del chat> le escribe a ese chat"
+  check_eq "$(cat "$CT/chat1.txt" 2>/dev/null)" "" "y no a otro chat"
+  check_eq "$(grep '^auto=' "$CT/out")" "auto=1" "bk say sin agente no elige un chat"
+  check_eq "$(grep '^stop=' "$CT/out")" "stop=1" "bk stop no cierra un chat"
+  check_eq "$(grep '^chats=' "$CT/out")" "chats=2" "bk ls lista los chats"
+fi
+
 finish

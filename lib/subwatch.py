@@ -2,6 +2,7 @@
 """bk sub: ver en vivo la sesión de un subagente (los de la herramienta Agent, que no son ventanas).
 
   bk sub                lista los subagentes vivos de todas las sesiones; elegís uno con su número
+  bk sub <palabra>      el subagente vivo cuya descripción la contiene
   bk sub <agent.jsonl>  sigue ese transcript: lo que dice, las herramientas que usa y sus resultados
 
 Solo lectura: a un subagente no se le escribe (lo maneja el chat que lo lanzó).
@@ -13,6 +14,7 @@ import os
 import re
 import select
 import shutil
+import subprocess
 import sys
 import termios
 import time
@@ -169,6 +171,14 @@ def follow(path, title):
 
 def main():
     args = sys.argv[1:]
+    if args and not os.path.exists(args[0]):
+        # bk sub <palabra>: el subagente vivo cuya descripción la contiene
+        r = subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.realpath(__file__)), "agents.py"),
+                            "subs", " ".join(args)], capture_output=True, text=True)
+        if r.returncode != 0 or not r.stdout.strip():
+            sys.stderr.write(r.stderr)
+            sys.exit(1)
+        args = [r.stdout.strip()]
     if args:
         p = args[0]
         meta = p[:-len(".jsonl")] + ".meta.json"
