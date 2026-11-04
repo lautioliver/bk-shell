@@ -59,6 +59,10 @@ quedó sin commitear, en una sola sesión de tmux.
   te deja elegir. También acepta un número (`bk say 240 "…"`, aunque la ventana sea `i218`) o una palabra del título
   (`bk say glosario "…"`); lo mismo `bk go`, `bk peek` y `bk stop`. `bk ls` y el riel muestran el título del issue o
   PR de cada agente, la pregunta que te dejó, y ponen primero a los que te esperan.
+- **Chats con nombre**: cada workspace se llama como lo nombres (`bk name orquestador`, o `bk chat --nombre X` al
+  abrirlo); si no, como lo renombraste con `/rename` o con el título que le puso Claude. `bk ls` los lista con sus
+  subagentes, `bk go orquestador` te lleva y `bk say orquestador "…"` le escribe. `bk sub <palabra>` sigue al
+  subagente vivo cuya descripción la contiene.
 - **Estado real de cada agente**: trabajando, te espera (permiso, confianza en la carpeta, plan por aprobar),
   en segundo plano (comandos, monitores o subagentes que siguen corriendo) o listo.
 - **Stats**: mapa de actividad, modelo favorito, rachas y costo equivalente en API de todo tu historial de Claude Code.

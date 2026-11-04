@@ -31,6 +31,8 @@ uso: bk [comando] [--dry-run]
   chat [--suelto]   otro chat del proyecto, como un workspace más en la tira (alt+N); --suelto: sin
                     proyecto, en el lugar del chat (alt+q vuelve)
   chat --rama N     otro chat en su propio worktree y rama chat/N (desde la rama principal); si existe, lo reusa
+  chat --nombre X   el chat nuevo se llama X (bk ls, bk say X "…", bk go X); también con --rama
+  name ["nombre"]   nombrar el chat de este workspace (sin nombre: el de /rename o el título de Claude; - lo borra)
   open [proyecto]   abrir el workspace de otro proyecto en una ventana nueva (sin argumento: los abiertos)
   plan "<idea>"     planner: /plan-feature en la raíz del proyecto
   run <issue>       routing.py elige el rol → prepare.sh crea worktree → implementer en tmux
@@ -48,7 +50,7 @@ uso: bk [comando] [--dry-run]
   s                 sesiones de Claude estilo Orca: abiertas (saltar) y recientes de todas las
                     carpetas (retomar con claude --resume). En tmux: prefijo + s
   peek [ventana] [n] ver qué hace un agente sin entrar (sin ventana: todos, últimas líneas)
-  say [agente] "…"  escribirle a un agente como si estuvieras en su ventana; sin agente, al que te espera
+  say [agente] "…"  escribirle a un agente (o a un chat por su nombre) como si estuvieras ahí; sin agente, al que te espera
   watch [ventana]   pantalla de un agente en vivo, solo lectura (sin ventana: toma el próximo
                     agente que nadie esté mirando; --all: todos en un panel, como en el workspace)
   stop <agente>     cerrar la ventana del agente (el worktree queda)
@@ -183,6 +185,16 @@ pre_register() {
 
 # resolve_win <algo>: la ventana de un agente por su nombre, un número (#240 es el PR de i218) o una
 # palabra del título. Si no alcanza, en una terminal abre el selector; si no, lista los candidatos y falla.
+# Pane de lo que devolvió resolve_win: un agente (su ventana) o un chat (chat:<workspace>)
+win_pane() {
+  case "$1" in
+    chat:*) # el pane del chat del workspace: el de la ventana main que no es la tira ni el riel
+            tmux list-panes -t "${1#chat:}:main" -F '#{pane_id} #{pane_start_command}' 2>/dev/null \
+              | grep -v -e 'bk rail' -e 'bk sidebar' | head -1 | cut -d' ' -f1 ;;
+    *)      agent_target "$1" ;;
+  esac
+}
+
 resolve_win() {
   if has_window "$1"; then printf '%s' "$1"; return; fi
   python3 "$WS/lib/agents.py" resolve "$1"
@@ -194,6 +206,7 @@ go() {
   tmux has-session -t "$SESSION" 2>/dev/null || die "no hay agentes (sesión tmux '$SESSION' vacía)"
   if [ -n "$win" ]; then win=$(resolve_win "$win") || exit 1; fi
   local target="$SESSION${win:+:$win}"
+  case "$win" in chat:*) target="${win#chat:}" ;; esac   # un chat: su workspace
   if [ -n "${TMUX:-}" ]; then tmux switch-client -t "$target"; else exec tmux attach -t "$target"; fi
 }
 
@@ -212,7 +225,7 @@ peek() {
   local win="${1:-}" n="${2:-}"
   if [ -n "$win" ]; then
     win=$(resolve_win "$win") || exit 1
-    tmux capture-pane -p -J -t "$(agent_target "$win")" -S "-${n:-60}"
+    tmux capture-pane -p -J -t "$(win_pane "$win")" -S "-${n:-60}"
     return
   fi
   local w
@@ -240,11 +253,11 @@ say() {
     win=$(resolve_win "$1") || exit 1; shift; msg="$*"
   fi
   [ -n "$msg" ] || die "falta el mensaje"
-  local tp; tp=$(agent_target "$win")
+  local tp; tp=$(win_pane "$win")
   tmux send-keys -t "$tp" -l -- "$msg"
   sleep 0.2
   tmux send-keys -t "$tp" Enter
-  info "→ $win: $msg   (bk peek $win para ver la respuesta)"
+  info "→ ${win#chat:}: $msg   (bk peek ${win#chat:} para ver la respuesta)"
 }
 
 # Espejo en vivo de un agente (solo lectura). Sin ventana, cada `bk watch` "reclama" un agente
@@ -370,6 +383,7 @@ workspace() {
     chat=$(tmux new-session -d -P -F '#{pane_id}' -s "$WS_SESSION" -n main -c "$dir" -x "$cols" -y "$lines" \
            -e "BK_PROJECT=$top" "claude; exec \$SHELL")
     tmux set-environment -t "$WS_SESSION" BK_PROJECT "$top"
+    [ -z "${BK_WS_NAME:-}" ] || tmux set-option -t "$WS_SESSION" @bk_name "$BK_WS_NAME"
     rail=$(tmux split-window -d -P -F '#{pane_id}' -h -l 34% -t "$chat" -c "$dir" -e "BK_PROJECT=$top" "bk rail")
     # Tira izquierda: sesiones activas (workspaces y agentes), a lo Gentle Shell 4
     local side
@@ -474,12 +488,25 @@ new_window() {
 #                 la rama principal de origin: varios cambios del mismo proyecto a la vez sin pisarse.
 #                 Si ya existe, lo reusa
 #   --suelto      un claude sin proyecto (~/.bk/chats) en la sesión "agents", traído al lugar del chat
+# bk name "<nombre>": cómo se llama el chat de este workspace (bk ls, la tira, bk say/go <nombre>).
+# Sin nombre: lo muestra. bk name -: lo borra (vuelve al de /rename o al título de Claude).
+cmd_name() {
+  need_tmux
+  local ws="${BK_FROM:-$(tmux display-message -p '#{session_name}' 2>/dev/null || true)}"
+  case "$ws" in bk*) ;; *) die "bk name va desde el chat de un workspace (bk-…)" ;; esac
+  if [ $# -eq 0 ]; then tmux show-options -qv -t "$ws" @bk_name; return; fi
+  if [ "$1" = - ]; then tmux set-option -u -t "$ws" @bk_name; info "sin nombre: $ws"; return; fi
+  tmux set-option -t "$ws" @bk_name "$*"
+  info "$ws se llama «$*» (bk say/go $*)"
+}
+
 cmd_chat() {
   set +euo pipefail
   local loose=0 branch="" want_branch=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --suelto) loose=1; shift ;;
+      --nombre) export BK_WS_NAME="${2:?--nombre necesita un nombre}"; shift 2 ;;
       --rama) want_branch=1; branch="${2:-}"; if [ $# -ge 2 ]; then shift 2; else shift; fi ;;
       *) break ;;
     esac
@@ -664,6 +691,7 @@ stop() {
   need_tmux
   local win="${1:?bk stop <ventana>}" panes
   win=$(resolve_win "$win") || exit 1
+  case "$win" in chat:*) die "bk stop cierra agentes; un chat se cierra desde su workspace (/exit)" ;; esac
   # Si el agente está de visita en un workspace (alt+shift+N), en esta ventana quedó el chat de ese
   # workspace: devolverlo a su lugar antes de cerrar, para no matarlo. || true: sin chat de visita el
   # grep no encuentra nada y, con pipefail, cortaría el script en silencio.
@@ -861,6 +889,7 @@ case "${1:-}" in
   term|t)      shift; ws_term "${1:-$PWD}" ;;
   sub)         shift; exec python3 "$WS/lib/subwatch.py" "$@" ;;
   sound)       shift; cmd_sound "${1:-status}" ;;
+  name)        shift; cmd_name "$@" ;;
   song)        shift; exec "$WS/lib/song.sh" "$@" ;;
   _nth)        tmux list-sessions -F '#{session_created} #{session_name}' 2>/dev/null \
                  | awk '$2 ~ /^bk/' | sort -n | awk -v n="${2:-1}" 'NR == n {print $2}' ;;
