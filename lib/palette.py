@@ -15,6 +15,7 @@ ENTRIES = [
     ("Agentes", "Revisar un PR", "review", "PR", "run"),
     ("Agentes", "Corregir un PR abierto", "fix", "PR y la instrucción", "run"),
     ("Agentes", "Planear una feature", "plan", "idea", "run"),
+    ("Agentes", "Monitor de agentes y desvíos", "monitor", None, "view"),
     ("Agentes", "Orquestar (hasta 3 issues)", "orchestrate", None, "run"),
     ("Agentes", "Cerrar la ventana de un agente", "stop", "ventana", "run"),
     ("Vistas", "Agentes en vivo", "watch --all", None, "view"),

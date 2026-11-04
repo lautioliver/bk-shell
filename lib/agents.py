@@ -26,7 +26,7 @@ import unicodedata
 
 SESSION = os.environ.get("BK_SESSION", "agents")
 STATE_DIR = os.environ.get("BK_STATE_DIR", os.path.expanduser("~/.cache/sketchybar/agents"))
-PROJECTS = os.path.expanduser("~/.claude/projects")
+PROJECTS = os.environ.get("BK_PROJECTS") or os.path.expanduser("~/.claude/projects")
 TITLES = os.path.join(os.environ.get("BK_CACHE_DIR", os.path.expanduser("~/.cache/bk")), "titles.json")
 WIN_RE = re.compile(r"^(?:[\w.-]+-)?(i|pr|f)(\d+)$")   # i218, pr241, f240, abra-i12
 
