@@ -70,7 +70,7 @@ def plans(project=None):
             if project and not os.path.realpath(cwd).startswith(os.path.realpath(project)):
                 continue
             out.append({"kind": "plan", "title": AG.session_title(st.get("_sid")) or "plan", "where": AG.project_label(cwd),
-                        "pane": st.get("pane", ""), "ts": st.get("ts", 0)})
+                        "cwd": cwd, "pane": st.get("pane", ""), "ts": st.get("ts", 0)})
     return out
 
 
@@ -101,7 +101,8 @@ def lessons():
             continue
         if "status: proposed" in head:
             title = next((l[2:] for l in head.splitlines() if l.startswith("# ")), os.path.basename(f)[:-3])
-            out.append({"kind": "lesson", "title": title, "where": "vault", "path": f})
+            scope = next((l.split(":", 1)[1].split("#")[0].strip() for l in head.splitlines() if l.startswith("scope:")), "")
+            out.append({"kind": "lesson", "title": title, "where": scope or "global", "path": f})
     return out
 
 
