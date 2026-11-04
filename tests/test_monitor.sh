@@ -49,4 +49,36 @@ check_eq "$(grep -c '^ev loop' <<<"$OUT")" 1 "un solo loop (otros errores con Ex
 check_eq "$(grep -cx 'ev stale' <<<"$OUT")" 0 "trabado se avisa una vez, como grave"
 check_eq "$(grep -c '^ev ' <<<"$OUT")" 6 "ni un desvío de más"
 grep -q '^frame [0-9]' <<<"$OUT"; check $? "dibuja un cuadro"
+# La tecla s alterna el sonido en los dos sentidos (antes no volvía a prenderlo)
+SC="$TMP/sndconf"; mkdir -p "$SC"; echo off > "$SC/sound"
+tmux new-session -d -s mon -x 150 -y 40 "BK_CONFIG_DIR=$SC python3 $ROOT/lib/monitor.py"
+sleep 3; tmux send-keys -t mon s; sleep 1.2
+check_eq "$(cat "$SC/sound")" on "s prende el sonido apagado"
+tmux send-keys -t mon s; sleep 1.2
+check_eq "$(cat "$SC/sound")" off "s lo vuelve a apagar"
+tmux send-keys -t mon q
+
+# Detectores compartidos (lib/deviations.py): cerrar una pregunta no es un desvío; los hallazgos de una review se clasifican
+DV=$(python3 - "$ROOT" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1] + "/lib")
+import deviations as D
+ctx = {"ts": "", "project": "p", "session": "s", "model": "m", "role": "implementer"}
+print("ask", len(D.user_events({"type": "tool_result", "tool_use_id": "t1", "is_error": True,
+                                "content": "The user doesn't want to proceed"}, ctx, {"t1": "AskUserQuestion"}, {}, "x")))
+print("bash", len(D.user_events({"type": "tool_result", "tool_use_id": "t2", "is_error": True,
+                                 "content": "The user doesn't want to proceed"}, ctx, {"t2": "Bash::ls"}, {}, "x")))
+body = "### Blocking\n\nNone.\n\n### To fix\n\n1. **PR body:** the red block is from another PR.\n   - detalle anidado\n2. **x.py:** a `null` gives a traceback.\n\n### Suggestions\n\n- algo"
+items = D.review_findings(body)
+print("items", len(items))
+print("clases", "|".join(D.finding_class(i) for i in items))
+print("chat", len(D.agent_risks({"type": "tool_use", "input": {"command": "env -u GH_CONFIG_DIR gh pr merge 1"}}, ctx, False)))
+PY
+)
+check_eq "$(grep '^ask' <<<"$DV")" "ask 0" "cerrar una pregunta (AskUserQuestion) no es un desvío"
+check_eq "$(grep '^bash' <<<"$DV")" "bash 1" "rechazar un comando sí"
+check_eq "$(grep '^items' <<<"$DV")" "items 2" "una review: solo los ítems de primer nivel de To fix (Blocking: None, Suggestions afuera)"
+check_eq "$(grep '^clases' <<<"$DV")" "clases metadatos del PR|entrada inesperada sin manejar" "los hallazgos se clasifican"
+check_eq "$(grep '^chat' <<<"$DV")" "chat 0" "en un chat tuyo, env -u GH_CONFIG_DIR no es un desvío"
+
 finish
