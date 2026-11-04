@@ -42,7 +42,8 @@ except Exception:
 CACHE = os.environ.get("BK_CACHE_DIR", os.path.expanduser("~/.cache/bk"))
 LOG = os.path.join(CACHE, "monitor-events.jsonl")
 SOUND_OFF = os.path.join(os.environ.get("BK_CONFIG_DIR", os.path.expanduser("~/.config/bk")), "sound")
-VAULT_DATA = os.path.expanduser("~/Documents/Obsidian Vault/agents/data")
+VAULT_DATA = os.path.join(os.path.expanduser(os.environ.get("BARRILETE_VAULT", "~/Documents/Obsidian Vault")), "agents", "data")
+TO_VAULT = {"loop", "stale_grave", "ci_claim"}   # los que bk learn no puede ver en los transcripts: el monitor los anota
 STALE_WARN, STALE_GRAVE = 600, 1200      # segundos "trabajando" sin eventos del hook
 LOOP_N, LOOP_WINDOW = 4, 900             # el mismo comando con el mismo error 4 veces en 15 min
 
@@ -60,12 +61,9 @@ TYPE_UI = {
     "attribution": ("te atribuye una decisión: verificá", AMBER),
 }
 
-RE_FORCE = re.compile(r"\bgit\s+push\b[^\n|;&]*(--force\b|--force-with-lease|\s-f\b|\s\+\S)")
-RE_CRED = re.compile(r"\bgh\s+auth\s+(login|token|refresh|switch)|\benv\s+-u\s+GH_CONFIG_DIR|\bunset\s+GH_CONFIG_DIR"
-                     r"|\bGH_TOKEN=\S|\bGITHUB_TOKEN=\S")
+# Los patrones de riesgo son los de lib/deviations.py (los mismos que guarda bk learn)
+RE_FORCE, RE_CRED, RE_ATTR = (getattr(L, "RE_FORCE", None), getattr(L, "RE_CRED", None), getattr(L, "RE_ATTR", None))
 RE_CI = re.compile(r"\b(CI|checks?)\b[^.\n]{0,40}\b(en verde|verde|green|pass(?:es|ed)?|pasa(?:n|ron)?)\b", re.I)
-RE_ATTR = re.compile(r"\bcomo (lo )?(decidiste|pediste|aprobaste|indicaste)\b|\b(as )?you (decided|approved|asked)\b"
-                     r"|\bper your (decision|approval)\b", re.I)
 
 
 def now():
@@ -245,6 +243,16 @@ class Monitor:
         except OSError:
             pass
         self.events.sort(key=lambda x: x["ts"])
+        if typ in TO_VAULT and not self.quiet and os.path.isdir(VAULT_DATA) and not os.environ.get("BK_MONITOR_DRY"):
+            day = time.strftime("%Y-%m-%d", time.localtime(e["ts"]))
+            row = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(e["ts"])), "project": who,
+                   "session": "monitor", "model": "-", "role": "-", "type": typ,
+                   "sig": TYPE_UI.get(typ, (typ,))[0], "detail": e["detail"][:280], "day": day}
+            try:
+                with open(os.path.join(VAULT_DATA, f"events-{day[:7]}.jsonl"), "a", encoding="utf-8") as f:
+                    f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            except OSError:
+                pass
         if typ in GRAVE_TYPES and not self.quiet:
             alert(f"⚠ {who}: {TYPE_UI.get(typ, (typ,))[0]}", e["detail"][:120])
 
