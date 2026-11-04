@@ -236,6 +236,8 @@ pane_state() {
 # Escribir en el pane lo que bk say encoló mientras el agente trabajaba (lo llama el hook al terminar el turno)
 task_drain() {
   local td="$1" tp="$2" line msg
+  # Con un menú abierto, lo encolado espera: el Enter elegiría una opción
+  [ -z "$(open_menu "$tp")" ] || return 0
   python3 "$TASKS" drain "$td" | while IFS= read -r line; do
     msg=$(jq -r '.msg // empty' <<<"$line"); [ -n "$msg" ] || continue
     tmux send-keys -t "$tp" -l -- "$msg"; sleep 0.2; tmux send-keys -t "$tp" Enter; sleep 0.5
@@ -319,6 +321,14 @@ peek() {
 # usarlo para aprobar en tu nombre.
 # Sin ventana (un solo argumento): al agente que te está esperando; si son varios, un selector.
 # La ventana puede ser el nombre (i218), un número (240, #218) o una palabra del título (glosario).
+# open_menu <pane>: si el agente muestra un menú de Claude Code (pregunta con opciones o pedido de permiso),
+# imprime sus opciones; si no, nada. Se reconoce por el pie del menú ("Enter to select", "Esc to cancel").
+open_menu() {
+  local scr; scr=$(tmux capture-pane -p -J -t "$1" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -n 25)
+  grep -qE 'Enter to (select|confirm)|Esc to (cancel|exit)|↑/↓ to navigate' <<<"$scr" || return 0
+  grep -E '^[[:space:]]*(❯[[:space:]]*)?[0-9]+\.[[:space:]]' <<<"$scr" | sed -E 's/^[[:space:]]*//' | head -n 9
+}
+
 say() {
   need_tmux
   local now=0; [ "${1:-}" = "--now" ] && { now=1; shift; }
@@ -341,6 +351,15 @@ say() {
       return
     fi ;;
   esac
+  # Un menú abierto (pregunta con opciones, permiso): el Enter elegiría la opción marcada aunque el texto sea
+  # otra cosa. El 2026-11-04 una aclaración aprobó así una ruta sensible. Con un menú, solo pasa un número.
+  local menu; menu=$(open_menu "$tp")
+  if [ -n "$menu" ] && ! [[ "$msg" =~ ^[0-9]$ ]]; then
+    printf 'bk: %s tiene un menú abierto; tu texto no se mandó (el Enter elegiría la opción marcada).\n' "${win#chat:}" >&2
+    printf '%s\n' "$menu" | sed 's/^/    /' >&2
+    printf '    Respondé con el número: bk say %s <n>\n' "${win#chat:}" >&2
+    exit 1
+  fi
   tmux send-keys -t "$tp" -l -- "$msg"
   sleep 0.2
   tmux send-keys -t "$tp" Enter
