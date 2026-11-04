@@ -404,7 +404,7 @@ class MonitorAgrupa(unittest.TestCase):
         self.assertNotIn("lección 3", t)
         self.assertIn("2 PRs sin movimiento hace más de 14 días (vet#13, vet#14; el más viejo, 25 días)", t)
         self.assertIn("#5 nuevo", t)
-        self.assertIn("11 te esperan", t.splitlines()[0])   # 10 lecciones + el PR nuevo; los viejos no cuentan
+        self.assertIn("2 te esperan", t.splitlines()[0])   # las 10 lecciones cuentan como 1, + el PR nuevo; los viejos no
 
 
 class MonitorLimpiar(unittest.TestCase):
