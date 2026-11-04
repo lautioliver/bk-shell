@@ -108,6 +108,9 @@ if command -v tmux >/dev/null; then
     export PATH="$X/bin:$PATH" TMUX_TMPDIR="$X/tmux" BK_STATE_DIR="$X/state" BK_CACHE_DIR="$X/cache" BK_CLIENT=nocliente
     export BK_TASKS_DIR="$X/tasks" BK_DRAIN_DELAY=0 BK_SOUND_DRY=1 BK_CONFIG_DIR="$X/config"; unset TMUX
     bk() { "$ROOT/bin/bk" "$@" </dev/null; }
+    # Una sesión que no es de agentes mantiene vivo el servidor de prueba, como el tuyo: si bk stop cierra la
+    # última ventana, el servidor se apagaría y el bk run siguiente podía colgarse arrancando otro a la vez.
+    tmux new-session -d -s keep "sleep 600"
     cd "$P"
     bk review 7 >/dev/null 2>&1; echo "review1=$?"
     out=$(bk review 7 2>&1); echo "review2=$?"; grep -q 'ya hay una tarea activa: pr7-reviewer' <<<"$out" && echo "aviso=ok"

@@ -340,6 +340,8 @@ def gather(fetch_titles=True, look=True, chats_too=True):
         q = last_question(pane) if look and (why or state in ("done", "idle")) else ""
         if state in ("done", "idle") and not why and q:
             why = "te pregunta"
+        if task_note(tks.get(win)):   # su tarea ya cerró: no puede estar preguntándote nada (un estado viejo del pane)
+            why, q = "", ""
         out.append({
             "win": win, "pane": pane, "kind": kind, "num": num, "ref": ref, "pr": pr, "title": title,
             "role": st.get("role", ""), "model": re.sub(r"^claude-|-\d{8}$", "", st.get("model") or ""),

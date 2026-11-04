@@ -152,6 +152,18 @@ class Tareas(unittest.TestCase):
         a.update(note="", state="working", queued=1)
         self.assertIn("trabajando 3m · 1 en cola", AG.line(a, color=False))
 
+    def test_una_tarea_cerrada_no_te_pregunta(self):
+        d, _ = TK.create("kit", "pr7-reviewer", "reviewer", window="pr7")
+        TK.close(d, "incomplete")
+        for name in ("windows", "states", "subagents"):
+            self.addCleanup(setattr, AG, name, getattr(AG, name))
+        AG.windows = lambda: {"pr7": "%9"}
+        AG.states = lambda: {"%9": {"state": "waiting", "tool": "confianza", "ts": 1, "cwd": "/tmp"}}
+        AG.subagents = lambda sid: []
+        a = [x for x in AG.gather(fetch_titles=False, look=False, chats_too=False) if x["win"] == "pr7"][0]
+        self.assertFalse(a["asks"])
+        self.assertIn("terminó sin bk done", AG.line(a, color=False))
+
     def test_el_riel_muestra_el_cierre_y_la_cola(self):
         d, _ = TK.create("kit", "pr7-reviewer", "reviewer", window="pr7")
         with open(os.path.join(d, "queue.jsonl"), "w") as f:
