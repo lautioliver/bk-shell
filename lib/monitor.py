@@ -605,8 +605,10 @@ def headline(mon):
     chats = [a for a in mon.agents if a["kind"] == "chat"]
     busy = sum(1 for a in ags if a["state"] in ("working", "background") and not a.get("note"))
     # los PRs sin movimiento no cuentan como "te esperan": siguen en la lista, apagados
+    # las lecciones cuentan como una (revisarlas es una sola tarea); los PRs sin movimiento no cuentan
     waits = sum(1 for a in mon.agents if not a.get("note") and (a["asks"] or a["state"] == "waiting")) \
-        + sum(1 for c in mon.checkpoints if not c.get("stale"))
+        + sum(1 for c in mon.checkpoints if not c.get("stale") and c["kind"] != "lesson") \
+        + (1 if any(c["kind"] == "lesson" for c in mon.checkpoints) else 0)
     parts = [f"{len(ags)} agente{'s' if len(ags) != 1 else ''}" + (f" ({busy} trabajando)" if busy else ""),
              f"{len(chats)} chat{'s' if len(chats) != 1 else ''}"]
     parts.append(f"{AMBER}{BOLD}{waits} te espera{'n' if waits != 1 else ''}{RST}{MUTED}" if waits else f"{GREEN}nadie te espera{RST}{MUTED}")
