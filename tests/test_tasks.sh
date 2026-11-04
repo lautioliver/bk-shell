@@ -112,6 +112,7 @@ if command -v tmux >/dev/null; then
     jq -n --arg p "$pane" '{state: "working", pane: $p, ts: (now | floor + 1), cwd: "/tmp"}' > "$X/state/s1.json"
     bk say pr7 "hola agente" >/dev/null 2>&1; echo "say=$?"; sleep 0.3
     echo "antes=$(cat "$td/typed.txt" 2>/dev/null)|cola=$(wc -l < "$td/queue.jsonl" | tr -d ' ')"
+    bk ls 2>/dev/null | grep pr7 | grep -q '1 en cola' && echo "lscola=ok"
     printf '{"session_id":"s1","hook_event_name":"Stop","cwd":"/tmp"}' \
       | BK_TASK_DIR="$td" TMUX_PANE="$pane" bash "$ROOT/hooks/agent_state.sh"
     sleep 1.5; echo "despues=$(cat "$td/typed.txt" 2>/dev/null)"
@@ -119,7 +120,11 @@ if command -v tmux >/dev/null; then
     bk say --now pr7 "ya mismo" >/dev/null 2>&1; sleep 0.4; echo "now=$(tail -1 "$td/typed.txt")"
     # El proceso del agente termina sin bk done: incomplete
     tmux send-keys -t "$pane" C-d; sleep 1; echo "fin=$(jq -r .status "$td/task.json")"
+    bk ls 2>/dev/null | grep pr7 | grep -q 'terminó sin bk done' && echo "lsfin=ok"
     bk stop pr7 >/dev/null 2>&1
+    # bk fix con el otro implementer sobre un PR que ya tiene uno activo: no lanza otro (antes de tocar gh)
+    python3 "$ROOT/lib/tasks.py" create proj pr9-implementer-light --role implementer-light --window f9 >/dev/null
+    out=$(bk fix 9 "algo" 2>&1); echo "fixrol=$?"; grep -q 'ya hay una tarea activa: pr9-implementer-light' <<<"$out" && echo "fixaviso=ok"
     # bk stop sobre un agente vivo: cancelled
     bk review 8 >/dev/null 2>&1; sleep 0.3; bk stop pr8 >/dev/null 2>&1
     echo "stop=$(jq -r .status "$X/tasks/proj/pr8-reviewer/task.json")"
@@ -140,10 +145,14 @@ if command -v tmux >/dev/null; then
   check_eq "$(g envdir)" "envdir=" "BK_TASK_DIR es del pane, no de toda la sesión"
   check_eq "$(g say)" "say=0" "bk say a un agente que trabaja no falla"
   check_eq "$(g antes)" "antes=|cola=1" "se encola sin escribirle (D8)"
+  check_eq "$(g lscola)" "lscola=ok" "bk ls muestra el mensaje en cola"
   check_eq "$(g despues)" "despues=hola agente" "al terminar el turno el hook se lo escribe"
   check_eq "$(g now)" "now=ya mismo" "bk say --now le escribe aunque trabaje"
   check_eq "$(g fin)" "fin=incomplete" "si el proceso termina sin bk done, la tarea queda incomplete"
+  check_eq "$(g lsfin)" "lsfin=ok" "bk ls muestra que terminó sin bk done"
   check_eq "$(g stop)" "stop=cancelled" "bk stop deja la tarea cancelled"
+  check_eq "$(g fixrol)" "fixrol=0" "bk fix sobre un PR con otro implementer activo no falla"
+  check_eq "$(g fixaviso)" "fixaviso=ok" "pero avisa la tarea del otro rol y no lanza nada"
   check_eq "$(g ls)" "ls=ok" "bk ls muestra la propuesta del reviewer"
   check_eq "$(g approve)" "approve=0" "bk approve la lanza desde cualquier carpeta"
   check_eq "$(g aprobada)" "aprobada=in_progress 1" "la propuesta pasa a in_progress con su ventana"

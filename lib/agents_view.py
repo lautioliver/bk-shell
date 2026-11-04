@@ -10,6 +10,7 @@ import glob, json, os, re, subprocess, sys, time, unicodedata
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import gentle as G
+import agents as AG   # tareas (ADR-005): mensajes de bk say en cola
 
 SESSION = os.environ.get("BK_SESSION", "agents")
 STATE = os.environ.get("BK_STATE_DIR", os.path.expanduser("~/.cache/bk/agents"))
@@ -80,7 +81,7 @@ def in_project(path):
 
 def agents():
     live, ended = [], []
-    st = states_by_pane()
+    st, tks = states_by_pane(), AG.task_by_window()
     for l in sh("tmux", "list-panes", "-s", "-t", SESSION, "-F",
                 "#{window_name}\t#{pane_id}\t#{pane_dead}\t#{pane_current_command}\t#{pane_current_path}\t#{@bk_ws}").splitlines():
         p = l.split("\t")
@@ -90,6 +91,7 @@ def agents():
         a = {"win": win, "pane": pane, "state": st.get(pane, {})}
         if not in_project(a["state"].get("cwd") or path):
             continue
+        a["queued"] = AG.queued(tks[win]) if win in tks else 0
         (ended if dead == "1" or cmd in SHELLS else live).append(a)
     order = {"waiting": 0, "working": 1, "background": 1, "done": 2, "idle": 3}
     live.sort(key=lambda a: order.get(a["state"].get("state"), 9))
@@ -117,6 +119,9 @@ def header(a, W):
     txt, col = STATE_STYLE.get(s.get("state"), (s.get("state") or "", GRAY))
     if s.get("tool") == "confianza":
         txt, col = "● confiá la carpeta", RED
+    q = a.get("queued", 0)
+    if q:   # bk say encolado (ADR-005 D8): se lo escribe al terminar el turno
+        txt += f" · ✉{q}"
     left = f"{MAUVE}{BOLD}▍{a['win']}{RST}"
     meta = " · ".join(x for x in (s.get("role"), model(s.get("model"))) if x)
     plain = f"▍{a['win']}  {meta}"

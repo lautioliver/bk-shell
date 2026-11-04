@@ -77,6 +77,8 @@ quedó sin commitear, en una sola sesión de tmux.
   `bk stop` la deja `cancelled`. Cuando un implementer abre un PR, `bk ls` propone su reviewer y lo lanzás con
   `bk approve pr<n>-reviewer`: nunca arranca solo. `bk say` a un agente que trabaja se encola hasta que termine
   el turno (`--now` para ya). `bk tasks` las lista con su carpeta; `bk tasks prune --yes` borra las terminadas.
+  `bk ls`, el riel y `alt+a` muestran cómo cerró cada agente y los mensajes en cola, y las propuestas aparecen
+  en *Checkpoints*.
 - **Stats**: mapa de actividad, modelo favorito, rachas y costo equivalente en API de todo tu historial de Claude Code.
 
 ## Requisitos

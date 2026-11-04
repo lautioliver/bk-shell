@@ -892,7 +892,7 @@ cmd_fix() {
   [[ "$n" =~ ^[0-9]+$ ]] && [ -n "$msg" ] || die "bk fix <pr> \"instrucción\""
   local root branch wt issue win
   root=$(project_root)
-  task_guard "$root" "pr$n-$role"
+  task_guard "$root" "pr$n-implementer"; task_guard "$root" "pr$n-implementer-light"
   branch=$(cd "$root" && gh pr view "$n" --json headRefName,state -q 'select(.state=="OPEN") | .headRefName') \
     || die "no pude leer el PR #$n"
   [ -n "$branch" ] || die "el PR #$n no está abierto"
@@ -930,8 +930,9 @@ cmd_run() {
     info "routing: $(sed -n 2p <<<"$out")"
   fi
 
-  # Antes de prepare.sh: un segundo bk run sobre el mismo issue no lanza otro agente (ADR-005 D2)
-  task_guard "$root" "$n-$role"
+  # Antes de prepare.sh: un segundo bk run sobre el mismo issue no lanza otro agente (ADR-005 D2), con
+  # cualquiera de los dos implementers (comparten el worktree). Una escalada pasa: el liviano cerró con escalate.
+  task_guard "$root" "$n-implementer"; task_guard "$root" "$n-implementer-light"
 
   if [ "$DRY" -eq 1 ]; then
     launch "i$n" "<worktree de prepare.sh>" "$role" "#$n" "/implement-issue $n" "$n-$role"
