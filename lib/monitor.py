@@ -32,6 +32,7 @@ sys.path.insert(0, HERE)
 import agents as AG  # noqa: E402
 import gentle as G   # noqa: E402
 import tasks as TK   # noqa: E402  (tareas de los agentes, ADR-005 del kit)
+import checkpoints as CK   # noqa: E402  (planes, reviewers propuestos, PRs y lecciones que te esperan)
 from gentle import AMBER, BOLD, GREEN, IRIS, MUTED, PETAL, RED, ROSE, RST, TEXT  # noqa: E402
 
 try:
@@ -220,7 +221,7 @@ class Monitor:
         self.ci_cache = {}       # pr → (ts, rojo?)
         self.stale_seen = set()
         self.agents = []
-        self.task_list, self.tasks_by_win, self.proposals = [], {}, []
+        self.task_list, self.tasks_by_win, self.checkpoints = [], {}, []
         self.today = {}
         self.week_avg = 0.0
         self.last_today = 0
@@ -285,7 +286,10 @@ class Monitor:
         except Exception:   # una carpeta de tareas rota no puede tirar el monitor
             pass
         self.tasks_by_win = AG.task_by_window()
-        self.proposals = [t for t in self.task_list if t.get("status") == "pending"]
+        try:
+            self.checkpoints = CK.items()
+        except Exception:
+            self.checkpoints = []
         live = set()
         for a in self.agents:
             who = a.get("short") if a["kind"] == "chat" else a["win"]
@@ -457,7 +461,8 @@ def agent_rows(mon, W, sel):
 
 
 def waiting_rows(mon, W):
-    """Lo que necesita tu respuesta, primero: preguntas, permisos y reviewers propuestos (bk approve)."""
+    """Lo que necesita tu respuesta, primero: preguntas y permisos en vivo, y después los checkpoints (planes,
+    reviewers propuestos, PRs para revisar o mergear, lecciones), con qué hacer en cada uno."""
     rows = []
     for a in mon.agents:
         if a.get("note") or not (a["asks"] or a["state"] == "waiting"):
@@ -466,9 +471,9 @@ def waiting_rows(mon, W):
         q = f" {AMBER}«{G.cut(a['question'], W - 40)}»{RST}" if a.get("question") else ""
         rows.append(G.cut(f"{col}{g}{RST} {TEXT}{BOLD}{G.fit(name_of(a), 16)}{RST} {col}{st}{RST}{q}"
                           f" {MUTED}· hace {ago(a['mins'])} · bk say {name_of(a)} \"…\"{RST}", W))
-    for t in mon.proposals:
-        rows.append(G.cut(f"{AMBER}◆{RST} {TEXT}{BOLD}{G.fit(t['id'], 16)}{RST} {AMBER}reviewer propuesto{RST} "
-                          f"{MUTED}({t.get('project', '')}, de {t.get('from', '-')}) · bk approve {t['id']}{RST}", W))
+    for c in mon.checkpoints:   # lo que solo vos podés hacer (bk checkpoints)
+        num = f"#{c['number']} " if c.get("number") else (f"{c['id']} " if c.get("id") else "")
+        rows.append(G.cut(f"{AMBER}◆{RST} {TEXT}{BOLD}{c['what']}{RST} {num}{c['title']} {MUTED}({c['where']}) · {c['todo']}{RST}", W))
     return rows
 
 
@@ -560,7 +565,7 @@ def headline(mon):
     ags = [a for a in mon.agents if a["kind"] != "chat"]
     chats = [a for a in mon.agents if a["kind"] == "chat"]
     busy = sum(1 for a in ags if a["state"] in ("working", "background") and not a.get("note"))
-    waits = sum(1 for a in mon.agents if not a.get("note") and (a["asks"] or a["state"] == "waiting")) + len(mon.proposals)
+    waits = sum(1 for a in mon.agents if not a.get("note") and (a["asks"] or a["state"] == "waiting")) + len(mon.checkpoints)
     parts = [f"{len(ags)} agente{'s' if len(ags) != 1 else ''}" + (f" ({busy} trabajando)" if busy else ""),
              f"{len(chats)} chat{'s' if len(chats) != 1 else ''}"]
     parts.append(f"{AMBER}{BOLD}{waits} te espera{'n' if waits != 1 else ''}{RST}{MUTED}" if waits else f"{GREEN}nadie te espera{RST}{MUTED}")

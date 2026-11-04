@@ -62,6 +62,8 @@ uso: bk [comando] [--dry-run]
   tasks [--all]     las tareas de los agentes con su estado, su resultado y su carpeta
   tasks prune [--days N] [--yes]  borrar tareas terminadas (nunca las activas; sin --yes solo muestra)
   approve <tarea>   lanzar una tarea propuesta (el reviewer de un PR, pr<n>-reviewer)
+  checkpoints [--json]  lo que te espera: planes por aprobar, reviewers propuestos, PRs para revisar o
+                    mergear y lecciones propuestas (lo mismo que "Te esperan" en bk monitor)
   roles             qué provider/modelo corre cada rol en este proyecto, y su modo
   sound [on|off|test]  sonido por tipo de pedido de los agentes: terminó, pregunta, permiso, error
   song [género]     radio por género (techno, house, rock, reggaeton, cachengue), tuya o cualquier url (bk song help)
@@ -435,7 +437,7 @@ watch() {
 #   ┌───────────────────────────────┬──────────────────┐
 #   │                               │ ✿ Status         │
 #   │  chat con el orquestador      │ ∗ Agents         │
-#   │  (claude)                     │ ◆ Checkpoints    │
+#   │  (claude)                     │ ✎ Changes        │
 #   │                               │ ✎ Changes        │
 #   │                               │ ♫ radio · atajos │
 #   └───────────────────────────────┴──────────────────┘
@@ -652,8 +654,8 @@ cmd_chat() {
 }
 
 
-# bk _prs: PRs tuyos listos para mergear y reviews que te pidieron, para la tarjeta Checkpoints del riel
-# (la escribe en ~/.cache/bk/checkpoints_prs.json; el riel la llama cada ~2 min en segundo plano)
+# bk _prs: PRs tuyos listos para mergear y reviews que te pidieron, para bk checkpoints (lib/checkpoints.py)
+# (la escribe en ~/.cache/bk/checkpoints_prs.json; checkpoints.py la pide cada ~2 min en segundo plano)
 cmd_prs() {
   set +euo pipefail
   command -v gh >/dev/null || return 0
@@ -975,6 +977,7 @@ case "${1:-}" in
   tasks)       shift; case "${1:-}" in prune) shift; exec python3 "$TASKS" prune "$@" ;;
                                      *) exec python3 "$TASKS" list "$@" ;; esac ;;
   approve)     shift; cmd_approve "${1:-}" ;;
+  checkpoints|ckpt) shift; exec python3 "$WS/lib/checkpoints.py" "$@" ;;
   _ended)      python3 "$TASKS" ended "${2:?}" || true; sketchybar --trigger agent_update >/dev/null 2>&1 || true ;;
   _drain)      task_drain "${2:?}" "${3:?}" ;;
   roles)       roles ;;

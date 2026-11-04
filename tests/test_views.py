@@ -6,6 +6,9 @@ os.environ.setdefault("BK_STATE_DIR", tempfile.mkdtemp())
 os.environ["BK_TASKS_DIR"] = tempfile.mkdtemp()   # nunca tus tareas reales
 os.environ["BK_CACHE_DIR"] = tempfile.mkdtemp()   # ni tu caché de títulos
 os.environ["BK_CONFIG_DIR"] = tempfile.mkdtemp()  # ni tu configuración (el sonido del monitor)
+os.environ["BARRILETE_VAULT"] = tempfile.mkdtemp()   # ni tu vault (lecciones de bk checkpoints)
+os.environ["BK_PRS_CACHE"] = os.path.join(tempfile.mkdtemp(), "prs.json")   # ni tu caché de PRs
+os.environ["BK_CHECKPOINTS_OFFLINE"] = "1"   # bk checkpoints no consulta GitHub en los tests
 import gentle as G          # noqa: E402
 import rail                 # noqa: E402
 import sidebar              # noqa: E402
@@ -229,11 +232,13 @@ class MonitorVista(unittest.TestCase):
         self.assertIn("1 agente (1 trabajando) · 0 chats", t.splitlines()[0])
 
     def test_reviewer_propuesto(self):
-        d, _ = TK.create("kit", "pr41-reviewer", "reviewer", pr=41, pending=True, origin="40-implementer")
-        self.mon.agents, self.mon.proposals = [], [TK.read(d)]
+        import checkpoints as CK
+        TK.create("kit", "pr41-reviewer", "reviewer", pr=41, pending=True, origin="40-implementer")
+        self.mon.agents, self.mon.checkpoints = [], CK.items(refresh=False)
         t = self.texto()
         self.assertIn("reviewer propuesto", t)
         self.assertIn("bk approve pr41-reviewer", t)
+        self.assertIn("1 te espera", t.splitlines()[0])
 
     def test_agentes_y_chats_separados_con_encabezados(self):
         self.mon.agents = [self.agente(), self.agente(win="chat:bk-kit", kind="chat", short="kit", title="Plan", role="chat",
@@ -286,3 +291,81 @@ class MonitorVista(unittest.TestCase):
         self.assertIn("te pregunta", STRIP.sub("", lines[-2]))   # la leyenda
         self.assertIn("q salir", STRIP.sub("", lines[-1]))
         self.assertTrue(all(G.vlen(l) <= 150 for l in lines))
+
+
+class Checkpoints(unittest.TestCase):
+    """bk checkpoints: una sola fuente de lo que te espera (el monitor, la barra y el comando la leen)."""
+
+    def setUp(self):
+        import checkpoints as CK
+        self.CK = CK
+        os.environ["BK_TASKS_DIR"] = tempfile.mkdtemp()
+        CK.PRS = os.path.join(tempfile.mkdtemp(), "prs.json")
+        CK.LESSONS = os.path.join(tempfile.mkdtemp(), "lessons")
+        os.makedirs(CK.LESSONS)
+        self.addCleanup(setattr, AG, "states", AG.states)
+        AG.states = lambda: {}
+
+    def test_los_cinco_tipos_en_orden(self):
+        AG.states = lambda: {"%1": {"phase": "plan_pending", "state": "done", "cwd": "/r/kit", "_sid": "s1", "pane": "%1"},
+                             "%2": {"phase": "plan_pending", "state": "working", "cwd": "/r/kit"}}
+        with open(self.CK.PRS, "w") as f:
+            json.dump([{"kind": "merge", "repo": "a/kit", "number": 5, "title": "listo"},
+                       {"kind": "review", "repo": "a/otro", "number": 7, "title": "miralo"}], f)
+        with open(os.path.join(self.CK.LESSONS, "l1.md"), "w") as f:
+            f.write("---\nstatus: proposed\nscope: kit  # alcance\n---\n# No mergear solo\n")
+        with open(os.path.join(self.CK.LESSONS, "l2.md"), "w") as f:
+            f.write("---\nstatus: accepted\n---\n# Ya aceptada\n")
+        TK.create("kit", "pr9-reviewer", "reviewer", pr=9, pending=True, origin="8-implementer")
+        cs = self.CK.items(refresh=False)
+        self.assertEqual([c["kind"] for c in cs], ["plan", "reviewer", "review", "merge", "lesson"])
+        todo = {c["kind"]: c["todo"] for c in cs}
+        self.assertEqual(todo["merge"], "gh pr merge 5 --squash --repo a/kit")
+        self.assertEqual(todo["review"], "bk review 7")
+        self.assertEqual(todo["reviewer"], "bk approve pr9-reviewer")
+        self.assertEqual([c["title"] for c in cs if c["kind"] == "lesson"], ["No mergear solo"])
+        self.assertEqual([c["where"] for c in cs if c["kind"] == "lesson"], ["kit"])
+        self.assertEqual([c["cwd"] for c in cs if c["kind"] == "plan"], ["/r/kit"])
+
+    def test_filtra_por_proyecto(self):
+        with open(self.CK.PRS, "w") as f:
+            json.dump([{"kind": "merge", "repo": "a/kit", "number": 5}, {"kind": "merge", "repo": "a/otro", "number": 6}], f)
+        TK.create("kit", "pr1-reviewer", "reviewer", pending=True, repo="/r/kit")
+        TK.create("otro", "pr2-reviewer", "reviewer", pending=True, repo="/r/otro")
+        cs = self.CK.items("/r/kit", refresh=False)
+        self.assertEqual(sorted(str(c.get("number") or c.get("id")) for c in cs), ["5", "pr1-reviewer"])
+
+    def test_una_fuente_rota_no_tapa_las_demas(self):
+        with open(self.CK.PRS, "w") as f:
+            f.write("{no es json")
+        TK.create("kit", "pr1-reviewer", "reviewer", pending=True)
+        AG.states = lambda: (_ for _ in ()).throw(RuntimeError("estado roto"))
+        self.assertEqual([c["kind"] for c in self.CK.items(refresh=False)], ["reviewer"])
+
+    def test_el_comando(self):
+        import subprocess
+        TK.create("kit", "pr1-reviewer", "reviewer", pending=True)
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        env = dict(os.environ, BK_PRS_CACHE=self.CK.PRS, BARRILETE_VAULT=os.path.dirname(os.path.dirname(self.CK.LESSONS)),
+                   BK_STATE_DIR=tempfile.mkdtemp())
+        out = subprocess.run([os.path.join(root, "bin", "bk"), "checkpoints", "--json"], capture_output=True,
+                             text=True, env=env).stdout
+        self.assertEqual([c["id"] for c in json.loads(out)], ["pr1-reviewer"])
+        out = subprocess.run([os.path.join(root, "bin", "bk"), "checkpoints"], capture_output=True, text=True, env=env).stdout
+        self.assertIn("→ bk approve pr1-reviewer", out)
+
+    def test_el_riel_ya_no_tiene_checkpoints(self):
+        self.assertFalse(hasattr(rail, "card_checkpoints"))
+
+    def test_pide_los_prs_una_vez_cada_tanto(self):
+        import subprocess
+        calls = []
+        self.addCleanup(setattr, subprocess, "Popen", subprocess.Popen)
+        subprocess.Popen = lambda *a, **k: calls.append(a)
+        os.environ.pop("BK_CHECKPOINTS_OFFLINE", None)
+        self.addCleanup(os.environ.__setitem__, "BK_CHECKPOINTS_OFFLINE", "1")
+        self.CK._asked[0] = 0
+        for _ in range(5):   # sin caché (sin red): una sola vez, no cada refresco del monitor
+            self.CK.refresh_prs()
+        self.assertEqual(len(calls), 1)
+
