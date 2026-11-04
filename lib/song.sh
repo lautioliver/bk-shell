@@ -97,7 +97,11 @@ play() {
   command -v mpv >/dev/null || die "falta mpv (brew install mpv)"
   mkdir -p "$CACHE"
   # Cambiar de estación conserva el volumen que tenías
-  local vol="${BK_SONG_VOL:-100}"; running && vol=$(prop volume) && vol=${vol%.*}
+  local vol="${BK_SONG_VOL:-100}" prev_url="" prev_now=""
+  if running; then
+    vol=$(prop volume); vol=${vol%.*}
+    prev_url=$(prop path); prev_now=$(cat "$NOW" 2>/dev/null || true)   # para volver si lo nuevo no suena
+  fi
   [[ "$vol" =~ ^[0-9]+$ ]] || vol=100
   kill_player
   nohup mpv --no-video --volume="$vol" --af="$VIZ" --no-terminal --idle=no --cache=yes --demuxer-max-bytes=2MiB \
@@ -120,7 +124,13 @@ play() {
   # el ERROR de yt-dlp dice el motivo ("video no disponible"); si no hay, la última queja de mpv
   local why; why=$(grep -m1 -o 'ERROR: [^"\]*' "$LOG" 2>/dev/null | sed 's/^ERROR: \(\[[^]]*\] [^:]*: \)\{0,1\}//')
   [ -n "$why" ] || why=$(grep -iE 'error|failed' "$LOG" 2>/dev/null | grep -v 'Exiting' | tail -n 1 | sed 's/^.*\] //')
-  die "no pude reproducir eso${why:+: $why} (log: $LOG)"
+  local back=""
+  if [ -n "$prev_url" ] && [ -z "${BK_SONG_RESTORING:-}" ]; then
+    local pk pn pg; IFS=$'\t' read -r pk pn pg <<<"$prev_now"
+    BK_SONG_RESTORING=1 BK_SONG_VOL="$vol" play "${pk:-url}" "${pn:-?}" "$prev_url" "${pg:-}" >/dev/null 2>&1 \
+      && back=" · sigue sonando ${pn:-lo de antes}"
+  fi
+  die "no pude reproducir eso${why:+: $why}${back} (log: $LOG)"
 }
 
 # ---------- estaciones ----------
