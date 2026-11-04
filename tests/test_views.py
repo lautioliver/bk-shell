@@ -313,7 +313,7 @@ class Checkpoints(unittest.TestCase):
             json.dump([{"kind": "merge", "repo": "a/kit", "number": 5, "title": "listo"},
                        {"kind": "review", "repo": "a/otro", "number": 7, "title": "miralo"}], f)
         with open(os.path.join(self.CK.LESSONS, "l1.md"), "w") as f:
-            f.write("---\nstatus: proposed\n---\n# No mergear solo\n")
+            f.write("---\nstatus: proposed\nscope: kit  # alcance\n---\n# No mergear solo\n")
         with open(os.path.join(self.CK.LESSONS, "l2.md"), "w") as f:
             f.write("---\nstatus: accepted\n---\n# Ya aceptada\n")
         TK.create("kit", "pr9-reviewer", "reviewer", pr=9, pending=True, origin="8-implementer")
@@ -324,6 +324,8 @@ class Checkpoints(unittest.TestCase):
         self.assertEqual(todo["review"], "bk review 7")
         self.assertEqual(todo["reviewer"], "bk approve pr9-reviewer")
         self.assertEqual([c["title"] for c in cs if c["kind"] == "lesson"], ["No mergear solo"])
+        self.assertEqual([c["where"] for c in cs if c["kind"] == "lesson"], ["kit"])
+        self.assertEqual([c["cwd"] for c in cs if c["kind"] == "plan"], ["/r/kit"])
 
     def test_filtra_por_proyecto(self):
         with open(self.CK.PRS, "w") as f:
