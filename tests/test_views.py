@@ -3,9 +3,13 @@ import json, os, re, sys, tempfile, unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib"))
 os.environ.setdefault("BK_STATE_DIR", tempfile.mkdtemp())
+os.environ["BK_TASKS_DIR"] = tempfile.mkdtemp()   # nunca tus tareas reales
+os.environ["BK_CACHE_DIR"] = tempfile.mkdtemp()   # ni tu caché de títulos
 import gentle as G          # noqa: E402
 import rail                 # noqa: E402
 import sidebar              # noqa: E402
+import agents as AG         # noqa: E402
+import tasks as TK          # noqa: E402
 
 STRIP = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
@@ -104,6 +108,81 @@ class Stats(unittest.TestCase):
         self.assertEqual(s["longest_streak"], 2)
         self.assertEqual(s["favorite"], "claude-opus-5-5")
         self.assertGreater(s["cost"], 0)
+
+class Tareas(unittest.TestCase):
+    """Los lectores de las tareas (ADR-005): bk ls, el riel y alt+a muestran cómo cerró y la cola de bk say."""
+
+    def setUp(self):
+        os.environ["BK_TASKS_DIR"] = tempfile.mkdtemp()
+
+    def test_la_tarea_de_una_ventana_prefiere_la_activa(self):
+        vieja, _ = TK.create("kit", "9-implementer", "implementer", window="i9")
+        TK.close(vieja, "incomplete")
+        nueva, _ = TK.create("kit", "9-implementer", "implementer", window="i9")
+        self.assertEqual(AG.task_by_window()["i9"]["status"], "in_progress")
+        TK.close(nueva, "cancelled")
+        self.assertEqual(AG.task_by_window()["i9"]["status"], "cancelled")   # la última que terminó ahí
+
+    def test_notas_de_cierre(self):
+        self.assertEqual(AG.task_note({"status": "completed", "result": {"kind": "pr", "pr": 12}}), ("✓", "cerró con PR #12"))
+        self.assertEqual(AG.task_note({"status": "completed", "result": {"kind": "blockers"}})[1], "review con bloqueantes")
+        self.assertEqual(AG.task_note({"status": "failed", "result": {"kind": "dropped", "reason": "otro alcance"}}),
+                         ("✕", "dropped: otro alcance"))
+        self.assertEqual(AG.task_note({"status": "incomplete"}), ("⚠", "terminó sin bk done"))
+        self.assertEqual(AG.task_note({"status": "cancelled"}), ("✕", "cancelada"))
+        self.assertIsNone(AG.task_note({"status": "waiting"}))
+        self.assertIsNone(AG.task_note(None))
+
+    def test_cola_y_propuestas(self):
+        d, _ = TK.create("kit", "pr3-reviewer", "reviewer", window="pr3", repo="/r/kit")
+        self.assertEqual(AG.queued(TK.read(d)), 0)
+        for m in ("uno", "dos"):
+            with TK.locked(d), open(os.path.join(d, "queue.jsonl"), "a") as f:
+                f.write(json.dumps({"msg": m}) + "\n")
+        self.assertEqual(AG.queued(TK.read(d)), 2)
+        TK.create("kit", "pr4-reviewer", "reviewer", repo="/r/kit", pending=True)
+        TK.create("otro", "pr5-reviewer", "reviewer", repo="/r/otro", pending=True)
+        self.assertEqual([t["id"] for t in AG.proposals("/r/kit")], ["pr4-reviewer"])
+        self.assertEqual(len(AG.proposals()), 2)
+
+    def test_bk_ls_muestra_el_cierre_y_la_cola(self):
+        a = {"win": "i9", "kind": "i", "num": "9", "ref": "", "pr": "", "title": "x", "project": "kit",
+             "asks": False, "why": "", "question": "", "state": "done", "mins": 3, "note": "terminó sin bk done", "queued": 0}
+        self.assertIn("terminó sin bk done", AG.line(a, color=False))
+        a.update(note="", state="working", queued=1)
+        self.assertIn("trabajando 3m · 1 en cola", AG.line(a, color=False))
+
+    def test_una_tarea_cerrada_no_te_pregunta(self):
+        d, _ = TK.create("kit", "pr7-reviewer", "reviewer", window="pr7")
+        TK.close(d, "incomplete")
+        for name in ("windows", "states", "subagents"):
+            self.addCleanup(setattr, AG, name, getattr(AG, name))
+        AG.windows = lambda: {"pr7": "%9"}
+        AG.states = lambda: {"%9": {"state": "waiting", "tool": "confianza", "ts": 1, "cwd": "/tmp"}}
+        AG.subagents = lambda sid: []
+        a = [x for x in AG.gather(fetch_titles=False, look=False, chats_too=False) if x["win"] == "pr7"][0]
+        self.assertFalse(a["asks"])
+        self.assertIn("terminó sin bk done", AG.line(a, color=False))
+
+    def test_el_riel_muestra_el_cierre_y_la_cola(self):
+        d, _ = TK.create("kit", "pr7-reviewer", "reviewer", window="pr7")
+        with open(os.path.join(d, "queue.jsonl"), "w") as f:
+            f.write(json.dumps({"msg": "hola"}) + "\n")
+        e, _ = TK.create("kit", "9-implementer", "implementer", window="i9")
+        TK.close(e, "incomplete")
+        live = [{"win": "pr7", "pane": "%1", "s": {"state": "working", "tool": "-", "ts": 9e9}}]
+        ended = [{"win": "i9", "pane": "%2", "s": {}}]
+        text = STRIP.sub("", "\n".join(rail.card_agents(60, live, ended)))
+        self.assertIn("1 mensaje en cola", text)
+        self.assertIn("i9 · terminó sin bk done", text)
+
+    def test_una_carpeta_de_tareas_rota_no_rompe_los_lectores(self):
+        os.makedirs(os.path.join(os.environ["BK_TASKS_DIR"], "kit", "roto"))
+        with open(os.path.join(os.environ["BK_TASKS_DIR"], "kit", "roto", "task.json"), "w") as f:
+            f.write("{no es json")
+        self.assertEqual(AG.task_by_window(), {})
+        self.assertEqual(AG.proposals(), [])
+
 
 
 if __name__ == "__main__":

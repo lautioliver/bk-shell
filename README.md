@@ -70,6 +70,15 @@ quedó sin commitear, en una sola sesión de tmux.
   suenan (Hero, fuerte) y notifican una vez. `enter` muestra la pantalla de un agente, `tab` + `d` el detalle de un desvío.
 - **Estado real de cada agente**: trabajando, te espera (permiso, confianza en la carpeta, plan por aprobar),
   en segundo plano (comandos, monitores o subagentes que siguen corriendo) o listo.
+- **Tareas** ([ADR-005 del kit](https://github.com/lautioliver/barrilete-kit/blob/main/docs/decisions/kit/ADR-005-tasks-and-events-for-bk-agents.md)):
+  cada agente de `bk run`, `bk review` o `bk fix` trabaja sobre una tarea (`<issue>-<rol>`, `pr<n>-<rol>`) con su
+  estado y sus eventos. Un segundo `bk run` sobre el mismo issue no lanza otro agente. El agente la cierra con
+  `bk done pr <n>` (o `blockers`, `dropped "…"`, `escalate "…"`); si termina sin cerrarla queda `incomplete`, y
+  `bk stop` la deja `cancelled`. Cuando un implementer abre un PR, `bk ls` propone su reviewer y lo lanzás con
+  `bk approve pr<n>-reviewer`: nunca arranca solo. Si al implementer lo lanzó `/orchestrate` (`bk run --orchestrated`), no hay propuesta: el orquestador lanza al reviewer. `bk say` a un agente que trabaja se encola hasta que termine
+  el turno (`--now` para ya). `bk tasks` las lista con su carpeta; `bk tasks prune --yes` borra las terminadas.
+  `bk ls`, el riel y `alt+a` muestran cómo cerró cada agente y los mensajes en cola, y las propuestas aparecen
+  en *Checkpoints*.
 - **Stats**: mapa de actividad, modelo favorito, rachas y costo equivalente en API de todo tu historial de Claude Code.
 
 ## Requisitos
@@ -129,13 +138,16 @@ bk help            # todo lo demás
 - Todo es tmux: cada workspace es una sesión `bk-<proyecto>`; los agentes, ventanas de la sesión `agents`.
 - El hook (`hooks/agent_state.sh`) escribe el estado de cada sesión de Claude Code en `~/.cache/bk/agents/`;
   el riel, la tira, el footer, `bk ls` y `bk s` lo leen de ahí.
+- Las tareas (`lib/tasks.py`) viven en `${XDG_STATE_HOME:-~/.local/state}/bk/tasks/<proyecto>/<id>/`: `task.json`
+  (el estado) y `events.jsonl` (un hecho por línea, con `seq`). El agente recibe esa carpeta en `BK_TASK_DIR`.
+  Nada se borra solo (`BK_TASKS_DIR` cambia la carpeta).
 - El estilo (tarjetas *float* o *neon*, densidad, header arriba o abajo) se guarda en `~/.config/bk/ui.json`.
 - Los costos son el **equivalente en API** de los tokens (con una suscripción no se cobra así).
 
 ## Tests
 
 ```bash
-bash tests/run.sh        # hook de estado, bk, instalador y vistas (también corre en CI: macOS y Linux)
+bash tests/run.sh        # hook de estado, bk, tareas, instalador y vistas (también corre en CI: macOS y Linux)
 ```
 
 Inspirado en [Gentle Shell](https://github.com/Gentleman-Programming/gentle-shell) de Gentleman Programming.

@@ -9,7 +9,7 @@ source "$HERE/lib.sh"
 
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 # Aislar del entorno de quien corre los tests (bk lanza agentes con estas variables)
-unset BARRILETE_ROLE BARRILETE_MODEL BARRILETE_ISSUE BARRILETE_PROVIDER TMUX_PANE
+unset BARRILETE_ROLE BARRILETE_MODEL BARRILETE_ISSUE BARRILETE_PROVIDER TMUX_PANE BK_TASK_DIR
 export BK_STATE_DIR="$TMP/state"
 export BK_SOUND_DRY=1 BK_CONFIG_DIR="$TMP/config"   # los sonidos se imprimen, no suenan
 ev() { printf '%s' "$1" | bash "$HOOK" >/dev/null; }

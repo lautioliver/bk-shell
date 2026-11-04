@@ -205,6 +205,7 @@ def card_agents(W, live, ended, here_sid=None):
     rows = []
     inner_w = inner(W)
     titles = AG.load_titles()
+    tks = AG.task_by_window()   # tareas (ADR-005): cómo cerró y qué quedó en la cola de bk say
 
     def asks(a):
         s = a["s"]
@@ -249,9 +250,14 @@ def card_agents(W, live, ended, here_sid=None):
             rows.append(f"  {AMBER}«{cut(a['_q'], inner_w - 4)}»{RST}")
         if s.get("state") == "working" and s.get("tool") not in (None, "-", "confianza"):
             rows.append(f"  {MUTED}↳ {s['tool']}{RST}")
+        q = AG.queued(tks[a["win"]]) if a["win"] in tks else 0
+        if q:
+            rows.append(f"  {PETAL}✉ {q} mensaje{'s' if q != 1 else ''} en cola{RST} {MUTED}· al terminar el turno{RST}")
         rows += sub_rows(s.get("_sid"), inner_w)
     for a in ended:
-        rows.append(f"{MUTED}✓ {a['win']} · terminó{RST}")
+        g, txt = AG.task_note(tks.get(a["win"])) or ("✓", "terminó")
+        col = AMBER if g == "⚠" else RED if g == "✕" else MUTED
+        rows.append(f"{col}{g}{RST} {MUTED}{a['win']} · {cut(txt, inner_w - len(a['win']) - 5)}{RST}")
     if here:
         rows = [f"{MUTED}este chat:{RST}"] + here + rows
     active = sum(1 for a in live if a["s"].get("state") in ("working", "background", "waiting")) + len(here)
@@ -264,6 +270,11 @@ def card_agents(W, live, ended, here_sid=None):
 
 def card_checkpoints(W, all_states):
     rows = []
+    # Tareas propuestas (ADR-005 D6): el reviewer de un PR espera tu sí
+    for t in AG.proposals():
+        if PROJECT and t.get("repo") and os.path.realpath(t["repo"]) != os.path.realpath(PROJECT):
+            continue
+        rows.append(f"{AMBER}●{RST} aprobar {TEXT}{t['id']}{RST} {MUTED}· bk approve {t['id']}{RST}")
     for s in all_states:
         if not in_project(s.get("cwd")):
             continue

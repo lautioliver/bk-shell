@@ -197,5 +197,14 @@ jq --arg state "$STATE" --arg cwd "$CWD" --arg tool "$TOOL_ARG" \
 # Sonido por tipo de pedido (terminó, pregunta, permiso, error), solo si el estado cambió
 SOUND="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/agent_sound.sh"
 [ -f "$SOUND" ] && bash "$SOUND" "$PREV_STATE" "$(jq -r '.state // ""' "$F" 2>/dev/null)" "$(jq -r '.wait // ""' "$F" 2>/dev/null)"
+
+# bk say encolado mientras el agente trabajaba (ADR-005 D8): al terminar el turno, escribirlo en su pane.
+# Solo en "done" (el turno terminó y el chat espera texto): en un permiso o una pregunta, lo tipeado
+# respondería otra cosa. En segundo plano y con un segundo de margen, para no frenar a Claude Code.
+if [ -n "${BK_TASK_DIR:-}" ] && [ -n "${TMUX_PANE:-}" ] && [ -s "$BK_TASK_DIR/queue.jsonl" ] \
+   && [ "$(jq -r '.state // ""' "$F" 2>/dev/null)" = done ]; then
+  BK="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/bin/bk"
+  (sleep "${BK_DRAIN_DELAY:-1}"; "$BK" _drain "$BK_TASK_DIR" "$TMUX_PANE") </dev/null >/dev/null 2>&1 &
+fi
 trigger
 exit 0

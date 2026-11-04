@@ -24,6 +24,8 @@ import sys
 import time
 import unicodedata
 
+import tasks as TK   # tareas de los agentes (ADR-005 del kit): estado final, propuestas y cola de bk say
+
 SESSION = os.environ.get("BK_SESSION", "agents")
 STATE_DIR = os.environ.get("BK_STATE_DIR", os.path.expanduser("~/.cache/sketchybar/agents"))
 PROJECTS = os.environ.get("BK_PROJECTS") or os.path.expanduser("~/.claude/projects")
@@ -264,9 +266,60 @@ def states():
     return out
 
 
+def task_by_window():
+    """{ventana: tarea}: la tarea activa de cada ventana o, si no hay, la última que terminó ahí."""
+    out = {}
+    try:
+        ts = TK.tasks()
+    except Exception:   # una carpeta de tareas rota no puede romper bk ls ni el riel
+        return out
+    for t in ts:
+        w = t.get("window")
+        if not w:
+            continue
+        # activa primero; después la vigente (no una guardada aparte como <id>~<fecha>); después la más nueva
+        def key(x):
+            return (x.get("status") in TK.ACTIVE, "~" not in os.path.basename(x.get("dir", "")), x.get("created", ""))
+        if w not in out or key(t) > key(out[w]):
+            out[w] = t
+    return out
+
+
+def queued(t):
+    """Cuántos bk say esperan a que el agente termine el turno."""
+    try:
+        with open(os.path.join(t["dir"], "queue.jsonl")) as f:
+            return sum(1 for ln in f if ln.strip())
+    except (OSError, KeyError):
+        return 0
+
+
+def task_note(t):
+    """(glifo, texto) de una tarea terminada, o None si sigue activa."""
+    st, r = (t or {}).get("status"), (t or {}).get("result") or {}
+    if st == "completed":
+        return ("✓", f"cerró con PR #{r['pr']}") if r.get("pr") else ("✓", "review con bloqueantes")
+    if st == "failed":
+        return ("✕", f"{r.get('kind', 'falló')}: {short(r.get('reason', ''), 40)}".rstrip(": "))
+    if st == "incomplete":
+        return ("⚠", "terminó sin bk done")
+    if st == "cancelled":
+        return ("✕", "cancelada")
+    return None
+
+
+def proposals(repo=None):
+    """Tareas propuestas que esperan tu aprobación (bk approve), de un repo o de todos."""
+    try:
+        ts = TK.tasks()
+    except Exception:
+        return []
+    return [t for t in ts if t.get("status") == "pending" and (repo is None or t.get("repo") == repo)]
+
+
 def gather(fetch_titles=True, look=True, chats_too=True):
     """Lista de agentes de la sesión `agents`, con lo necesario para nombrarlos."""
-    titles, sts, now = load_titles(), states(), time.time()
+    titles, sts, now, tks = load_titles(), states(), time.time(), task_by_window()
     out = []
     for win, pane in windows().items():
         st = sts.get(pane, {})
@@ -287,12 +340,16 @@ def gather(fetch_titles=True, look=True, chats_too=True):
         q = last_question(pane) if look and (why or state in ("done", "idle")) else ""
         if state in ("done", "idle") and not why and q:
             why = "te pregunta"
+        if task_note(tks.get(win)):   # su tarea ya cerró: no puede estar preguntándote nada (un estado viejo del pane)
+            why, q = "", ""
         out.append({
             "win": win, "pane": pane, "kind": kind, "num": num, "ref": ref, "pr": pr, "title": title,
             "role": st.get("role", ""), "model": re.sub(r"^claude-|-\d{8}$", "", st.get("model") or ""),
             "state": state, "asks": bool(why), "why": why, "question": q if why else "",
             "mins": int((now - st.get("ts", now)) // 60) if st else 0,
             "project": project_label(cwd),
+            "task": (tks.get(win) or {}).get("status", ""), "note": (task_note(tks.get(win)) or ("", ""))[1],
+            "queued": queued(tks[win]) if win in tks else 0,
         })
     for a in out:
         a["subs"] = subagents(sts.get(a["pane"], {}).get("_sid"))
@@ -344,6 +401,10 @@ def line(a, i=None, color=True):
     else:
         status = {"working": "trabajando", "background": "en segundo plano", "done": "listo",
                   "idle": "libre"}.get(a["state"], a["state"]) + f" {a['mins']}m" if a["state"] else "sin estado"
+        if a.get("note"):   # la tarea ya cerró: eso es lo que importa, no el estado del pane
+            status = a["note"]
+    if a.get("queued"):
+        status += f" · {a['queued']} en cola"
     num = f"{i:>2}  " if i is not None else ""
     name = a["short"] if a["kind"] == "chat" else a["win"]
     if len(name) > 14:   # el final distingue: barrilete-workspace-2 → …workspace-2
@@ -458,7 +519,8 @@ def main():
         print(json.dumps({a["pane"]: {"win": a.get("short") if a["kind"] == "chat" else a["win"], "kind": a["kind"],
                                       "label": label(a, 60), "asks": a["asks"], "why": a["why"],
                                       "question": short(a["question"], 70),
-                                      "subs": [short(d, 60) for d, _ in a["subs"]]}
+                                      "subs": [short(d, 60) for d, _ in a["subs"]],
+                                      "task": a.get("task", ""), "note": a.get("note", ""), "queued": a.get("queued", 0)}
                           for a in gather(fetch_titles=False)},
                          ensure_ascii=False))
         return
