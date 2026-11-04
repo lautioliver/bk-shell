@@ -7,6 +7,7 @@ set -euo pipefail
 WS="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
 SESSION="${BK_SESSION:-agents}"
 STATE_DIR="${BK_STATE_DIR:-$HOME/.cache/bk/agents}"
+export BK_STATE_DIR="$STATE_DIR"   # lib/agents.py lee el mismo estado
 DRY=0
 
 # Los atajos de tmux pasan BK_FROM/BK_CLIENT a los popups, pero el comando de display-popup no
@@ -38,8 +39,8 @@ uso: bk [comando] [--dry-run]
   fix <pr> "…"      implementer sobre la rama de un PR abierto (su worktree), con la instrucción dada
                     (--role implementer-light para usar el liviano)
   orchestrate       orchestrator: /orchestrate (reparte hasta 3 issues como subagentes)
-  ls                agentes: issue · rol · modelo · estado
-  go <ventana>      saltar a un agente (i42, pr57, plan, orch)
+  ls [--all]        agentes con el título de su issue/PR, los que te esperan primero (--all: todas las sesiones)
+  go <agente>       saltar a un agente. <agente>: la ventana (i42, pr57), un número (#240) o una palabra del título
   changes           lo que los agentes dejaron sin commitear, con diff (alt+g)
   palette | k       todos los comandos con búsqueda (alt+k)
   stats             estadísticas de uso: actividad, modelos, rachas, costo (alt+u)
@@ -47,10 +48,10 @@ uso: bk [comando] [--dry-run]
   s                 sesiones de Claude estilo Orca: abiertas (saltar) y recientes de todas las
                     carpetas (retomar con claude --resume). En tmux: prefijo + s
   peek [ventana] [n] ver qué hace un agente sin entrar (sin ventana: todos, últimas líneas)
-  say <ventana> "…" escribirle a un agente como si estuvieras en su ventana (aprobaciones incluidas)
+  say [agente] "…"  escribirle a un agente como si estuvieras en su ventana; sin agente, al que te espera
   watch [ventana]   pantalla de un agente en vivo, solo lectura (sin ventana: toma el próximo
                     agente que nadie esté mirando; --all: todos en un panel, como en el workspace)
-  stop <ventana>    cerrar la ventana del agente (el worktree queda)
+  stop <agente>     cerrar la ventana del agente (el worktree queda)
   roles             qué provider/modelo corre cada rol en este proyecto, y su modo
   sound [on|off|test]  sonido por tipo de pedido de los agentes: terminó, pregunta, permiso, error
   song [género]     radio por género (techno, house, rock, reggaeton, cachengue), tuya o cualquier url (bk song help)
@@ -162,6 +163,8 @@ launch() {
   # La ventana queda abierta si el agente termina, para leer lo último
   tmux set-option -w -t "$SESSION:$win" remain-on-exit on >/dev/null
   pre_register "$win" "$pane" "$dir" "$role" "$model" "$ref"
+  # El título del issue/PR para bk ls y la tira (una consulta a GitHub, en segundo plano)
+  (python3 "$WS/lib/agents.py" warm >/dev/null 2>&1 &)
   info "lanzado → bk go $win"
 }
 
@@ -178,12 +181,19 @@ pre_register() {
   sketchybar --trigger agent_update >/dev/null 2>&1 || true
 }
 
+# resolve_win <algo>: la ventana de un agente por su nombre, un número (#240 es el PR de i218) o una
+# palabra del título. Si no alcanza, en una terminal abre el selector; si no, lista los candidatos y falla.
+resolve_win() {
+  if has_window "$1"; then printf '%s' "$1"; return; fi
+  python3 "$WS/lib/agents.py" resolve "$1"
+}
+
 go() {
   need_tmux
   local win="${1:-}"
-  local target="$SESSION${win:+:$win}"
   tmux has-session -t "$SESSION" 2>/dev/null || die "no hay agentes (sesión tmux '$SESSION' vacía)"
-  [ -z "$win" ] || has_window "$win" || die "no existe la ventana '$win' (bk ls)"
+  if [ -n "$win" ]; then win=$(resolve_win "$win") || exit 1; fi
+  local target="$SESSION${win:+:$win}"
   if [ -n "${TMUX:-}" ]; then tmux switch-client -t "$target"; else exec tmux attach -t "$target"; fi
 }
 
@@ -201,7 +211,7 @@ peek() {
   tmux has-session -t "$SESSION" 2>/dev/null || die "no hay agentes (sesión tmux '$SESSION' vacía)"
   local win="${1:-}" n="${2:-}"
   if [ -n "$win" ]; then
-    has_window "$win" || die "no existe la ventana '$win' (bk ls)"
+    win=$(resolve_win "$win") || exit 1
     tmux capture-pane -p -J -t "$(agent_target "$win")" -S "-${n:-60}"
     return
   fi
@@ -217,12 +227,19 @@ peek() {
 # Escribir en la ventana de un agente: es tu teclado, así que vale como tu respuesta
 # (planes, "publicá", confianza…). Pensado para que lo corras vos; un agente no debería
 # usarlo para aprobar en tu nombre.
+# Sin ventana (un solo argumento): al agente que te está esperando; si son varios, un selector.
+# La ventana puede ser el nombre (i218), un número (240, #218) o una palabra del título (glosario).
 say() {
   need_tmux
-  local win="${1:?bk say <ventana> \"mensaje\"}"; shift
-  local msg="$*"
+  [ $# -gt 0 ] || die 'bk say ["agente"] "mensaje"   (agente: nombre, número o palabra; sin él, el que te espera)'
+  tmux has-session -t "$SESSION" 2>/dev/null || die "no hay agentes (sesión tmux '$SESSION' vacía)"
+  local win msg
+  if [ $# -eq 1 ]; then
+    msg="$1"; win=$(python3 "$WS/lib/agents.py" auto) || exit 1
+  else
+    win=$(resolve_win "$1") || exit 1; shift; msg="$*"
+  fi
   [ -n "$msg" ] || die "falta el mensaje"
-  has_window "$win" || die "no existe la ventana '$win' (bk ls)"
   local tp; tp=$(agent_target "$win")
   tmux send-keys -t "$tp" -l -- "$msg"
   sleep 0.2
@@ -646,7 +663,7 @@ ws_layout() {
 stop() {
   need_tmux
   local win="${1:?bk stop <ventana>}" panes
-  has_window "$win" || die "no existe la ventana '$win'"
+  win=$(resolve_win "$win") || exit 1
   # Si el agente está de visita en un workspace (alt+shift+N), en esta ventana quedó el chat de ese
   # workspace: devolverlo a su lugar antes de cerrar, para no matarlo. || true: sin chat de visita el
   # grep no encuentra nada y, con pipefail, cortaría el script en silencio.
@@ -663,7 +680,12 @@ stop() {
   info "cerrada $win (el worktree, si había, queda: cleanup.sh lo limpia cuando el issue cierre)"
 }
 
+# bk ls: los agentes de la sesión con el título de su issue/PR, los que te esperan primero.
+# bk ls --all: la tabla de antes, con todas las sesiones de Claude que reporta el hook (chats incluidos).
 ls_agents() {
+  if [ "${1:-}" != "--all" ] && tmux has-session -t "$SESSION" 2>/dev/null; then
+    python3 "$WS/lib/agents.py" list; return
+  fi
   local files=("$STATE_DIR"/*.json)
   # Ventanas tmux por pane, para mostrar a qué ventana saltar
   local map='{}'
@@ -820,7 +842,7 @@ case "${1:-}" in
   review)      shift; cmd_review "$@" ;;
   fix)         shift; cmd_fix "$@" ;;
   orchestrate) cmd_orchestrate ;;
-  ls)          ls_agents ;;
+  ls)          shift; ls_agents "${1:-}" ;;
   go)          shift; go "${1:-}" ;;
   peek)        shift; peek "${1:-}" "${2:-}" ;;
   say)         shift; say "$@" ;;
