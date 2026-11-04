@@ -37,7 +37,8 @@ uso: bk [comando] [--dry-run]
   open [proyecto]   abrir el workspace de otro proyecto en una ventana nueva (sin argumento: los abiertos)
   plan "<idea>"     planner: /plan-feature en la raíz del proyecto
   run <issue>       routing.py elige el rol → prepare.sh crea worktree → implementer en tmux
-                    (--role implementer|implementer-light para forzarlo)
+                    (--role implementer|implementer-light para forzarlo; --orchestrated si lo lanza
+                    /orchestrate: el orquestador lanza al reviewer y bk no lo propone)
   review <pr>       reviewer: /review-pr en la raíz del proyecto
   fix <pr> "…"      implementer sobre la rama de un PR abierto (su worktree), con la instrucción dada
                     (--role implementer-light para usar el liviano)
@@ -138,11 +139,11 @@ ws_term() {
   exec env -u TMUX tmux attach -t "=$name"
 }
 
-# launch <ventana> <dir> <rol> <ref> <comando> [tarea]
+# launch <ventana> <dir> <rol> <ref> <comando> [tarea] [orquestado: 1 si lo lanzó un orquestador]
 # Con tarea (ADR-005): la crea (o arranca la pendiente), le pasa BK_TASK_DIR al agente y, si el proceso
 # del agente termina sin `bk done`, la cierra como incomplete.
 launch() {
-  local win="$1" dir="$2" role="$3" ref="$4" cmd="$5" tid="${6:-}" spec provider model
+  local win="$1" dir="$2" role="$3" ref="$4" cmd="$5" tid="${6:-}" orch="${7:-0}" spec provider model
   spec=$(role_spec "$role" "$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null || true)")
   provider=${spec%%/*}; model=${spec#*/}
   local full; full=$(agent_cmd "$provider" "$model" "$cmd")
@@ -163,9 +164,10 @@ launch() {
   local env=(-e "BARRILETE_ROLE=$role" -e "BARRILETE_MODEL=$model" -e "BARRILETE_PROVIDER=$provider")
   [ -n "$ref" ] && env+=(-e "BARRILETE_ISSUE=$ref")
   if [ -n "$tid" ]; then
-    local proj tdir rc=0; proj=$(project_of "$dir")
+    local proj tdir rc=0 extra=(); proj=$(project_of "$dir")
+    [ "$orch" = 1 ] && extra=(--orchestrated)
     tdir=$(python3 "$TASKS" create "$proj" "$tid" --role "$role" --ref "$ref" --repo "$(project_top "$dir")" \
-           --worktree "$dir" --window "$win") || rc=$?
+           --worktree "$dir" --window "$win" "${extra[@]+"${extra[@]}"}") || rc=$?
     case $rc in
       0) ;;
       3) # ya existe: solo se lanza si es una propuesta pendiente (lanzarla es aprobarla, D6)
@@ -882,10 +884,11 @@ cmd_orchestrate() {
 
 # Retomar un PR abierto: mismo worktree/rama del implementer original (o uno nuevo si no existe).
 cmd_fix() {
-  local n="" role="implementer" msg=""
+  local n="" role="implementer" msg="" orch=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --role) role="${2:?--role necesita un valor}"; shift 2 ;;
+      --orchestrated) orch=1; shift ;;
       *) if [ -z "$n" ]; then n="${1#\#}"; else msg+="${msg:+ }$1"; fi; shift ;;
     esac
   done
@@ -905,14 +908,15 @@ cmd_fix() {
   fi
   issue=$(sed -nE 's#^claude/([0-9]+)-.*#\1#p' <<<"$branch")
   win="f$n"
-  launch "$win" "$wt" "$role" "#${issue:-$n}" "Retomás el PR #$n (rama $branch, ya hecha por otro implementer). Seguí el flujo de /implement-issue ${issue:-} para correcciones de un PR existente (TDD, red.sh, verify, cuerpo del PR) y no abras otro PR. Tarea: $msg" "pr$n-$role"
+  launch "$win" "$wt" "$role" "#${issue:-$n}" "Retomás el PR #$n (rama $branch, ya hecha por otro implementer). Seguí el flujo de /implement-issue ${issue:-} para correcciones de un PR existente (TDD, red.sh, verify, cuerpo del PR) y no abras otro PR. Tarea: $msg" "pr$n-$role" "$orch"
 }
 
 cmd_run() {
-  local n="" role=""
+  local n="" role="" orch=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --role) role="${2:?--role necesita un valor}"; shift 2 ;;
+      --orchestrated) orch=1; shift ;;
       *) n="${1#\#}"; shift ;;
     esac
   done
@@ -935,7 +939,7 @@ cmd_run() {
   task_guard "$root" "$n-implementer"; task_guard "$root" "$n-implementer-light"
 
   if [ "$DRY" -eq 1 ]; then
-    launch "i$n" "<worktree de prepare.sh>" "$role" "#$n" "/implement-issue $n" "$n-$role"
+    launch "i$n" "<worktree de prepare.sh>" "$role" "#$n" "/implement-issue $n" "$n-$role" "$orch"
     return
   fi
 
@@ -946,7 +950,7 @@ cmd_run() {
     || { printf '%s\n' "$prep" >&2; die "prepare.sh rechazó #$n (ver arriba)"; }
   wt=$(sed -nE 's/^Worktree: (.+)$/\1/p' <<<"$prep" | tail -1)
   [ -d "$wt" ] || { printf '%s\n' "$prep" >&2; die "prepare.sh no informó el worktree"; }
-  launch "i$n" "$wt" "$role" "#$n" "/implement-issue $n" "$n-$role"
+  launch "i$n" "$wt" "$role" "#$n" "/implement-issue $n" "$n-$role" "$orch"
 }
 
 # ---------- main ----------

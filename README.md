@@ -75,7 +75,7 @@ quedó sin commitear, en una sola sesión de tmux.
   estado y sus eventos. Un segundo `bk run` sobre el mismo issue no lanza otro agente. El agente la cierra con
   `bk done pr <n>` (o `blockers`, `dropped "…"`, `escalate "…"`); si termina sin cerrarla queda `incomplete`, y
   `bk stop` la deja `cancelled`. Cuando un implementer abre un PR, `bk ls` propone su reviewer y lo lanzás con
-  `bk approve pr<n>-reviewer`: nunca arranca solo. `bk say` a un agente que trabaja se encola hasta que termine
+  `bk approve pr<n>-reviewer`: nunca arranca solo. Si al implementer lo lanzó `/orchestrate` (`bk run --orchestrated`), no hay propuesta: el orquestador lanza al reviewer. `bk say` a un agente que trabaja se encola hasta que termine
   el turno (`--now` para ya). `bk tasks` las lista con su carpeta; `bk tasks prune --yes` borra las terminadas.
   `bk ls`, el riel y `alt+a` muestran cómo cerró cada agente y los mensajes en cola, y las propuestas aparecen
   en *Checkpoints*.

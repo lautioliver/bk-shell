@@ -50,6 +50,13 @@ check_eq "$(st "$r")" pending "el PR de un implementer crea pr<n>-reviewer en pe
 check_eq "$(jq -r '"\(.from) \(.pr) \(.repo)"' "$r/task.json")" "244-implementer 12 $TMP/kit" "con su origen, el PR y el repo"
 $T status "$r" in_progress; check_eq "$(st "$r")" pending "un hook no arranca una propuesta"
 
+# ---- lanzada por un orquestador: él lanza al reviewer, bk no lo propone (enmienda de D6) ----
+o=$($T create kit 60-implementer --role implementer --orchestrated)
+check_eq "$(jq -r .orchestrated "$o/task.json")" true "--orchestrated queda en task.json"
+out=$(BK_TASK_DIR="$o" $T done pr 61)
+[ ! -e "$BK_TASKS_DIR/kit/pr61-reviewer" ]; check $? "con --orchestrated, bk done pr no propone reviewer"
+grep -q 'lo lanza el orquestador' <<<"$out"; check $? "y lo dice"
+
 # ---- terminal no cambia nunca (D3) ----
 BK_TASK_DIR="$d" $T done dropped "otra cosa" >/dev/null 2>&1; check_eq $? 64 "bk done sobre una tarea cerrada falla"
 $T ended "$d" >/dev/null; $T cancel "$d" >/dev/null; $T status "$d" waiting
@@ -86,7 +93,7 @@ check_eq "$($T drain "$n")" "" "y la vacía"
 out=$($T list)
 grep -q "$BK_TASKS_DIR/kit/pr12-reviewer" <<<"$out"; check $? "bk tasks muestra la carpeta de cada tarea"
 check_eq "$($T list --json | jq -r 'first.status')" pending "y pone primero las propuestas (después de las que esperan)"
-$T prune >/dev/null; check_eq "$(ls "$BK_TASKS_DIR/kit" | wc -l | tr -d ' ')" 5 "prune sin --yes no borra nada"
+$T prune >/dev/null; check_eq "$(ls "$BK_TASKS_DIR/kit" | wc -l | tr -d ' ')" 6 "prune sin --yes no borra nada"
 $T prune --yes >/dev/null
 check_eq "$(ls "$BK_TASKS_DIR/kit" | sort | tr '\n' ' ')" "9-implementer pr12-reviewer " "prune --yes borra las terminadas y deja las activas"
 
@@ -128,6 +135,19 @@ if command -v tmux >/dev/null; then
     # bk stop sobre un agente vivo: cancelled
     bk review 8 >/dev/null 2>&1; sleep 0.3; bk stop pr8 >/dev/null 2>&1
     echo "stop=$(jq -r .status "$X/tasks/proj/pr8-reviewer/task.json")"
+    # bk run --orchestrated de punta a punta (prepare.sh falso, remote local): sin propuesta; sin el flag, con
+    git init -q --bare "$X/origin.git"; git -C "$P" remote add origin "$X/origin.git"
+    git -C "$P" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+    mkdir -p "$P/.claude/skills/implement-issue"
+    # como el real: un worktree de git en ../<repo>-wt/ (bk saca el proyecto de ahí)
+    printf '#!/bin/bash\nw="%s-wt/i$1"; git worktree add -q -b "t$1" "$w" >/dev/null 2>&1; echo "Worktree: $w"\n' "$P" > "$P/.claude/skills/implement-issue/prepare.sh"
+    chmod +x "$P/.claude/skills/implement-issue/prepare.sh"
+    BK_BOT=0 bk run 40 --role implementer --orchestrated >/dev/null 2>&1; echo "run40=$?"
+    BK_TASK_DIR="$X/tasks/proj/40-implementer" python3 "$ROOT/lib/tasks.py" done pr 41 >/dev/null
+    [ -e "$X/tasks/proj/pr41-reviewer" ] && echo "prop41=si" || echo "prop41=no"
+    BK_BOT=0 bk run 42 --role implementer >/dev/null 2>&1; echo "run42=$?"
+    BK_TASK_DIR="$X/tasks/proj/42-implementer" python3 "$ROOT/lib/tasks.py" done pr 43 >/dev/null
+    [ -e "$X/tasks/proj/pr43-reviewer" ] && echo "prop43=si" || echo "prop43=no"
     # Una propuesta: bk ls la muestra y bk approve la lanza
     i=$(python3 "$ROOT/lib/tasks.py" create proj 30-implementer --role implementer --repo "$P")
     BK_TASK_DIR="$i" python3 "$ROOT/lib/tasks.py" done pr 31 >/dev/null
@@ -154,6 +174,10 @@ if command -v tmux >/dev/null; then
   check_eq "$(g fixrol)" "fixrol=0" "bk fix sobre un PR con otro implementer activo no falla"
   check_eq "$(g fixaviso)" "fixaviso=ok" "pero avisa la tarea del otro rol y no lanza nada"
   check_eq "$(g ls)" "ls=ok" "bk ls muestra la propuesta del reviewer"
+  check_eq "$(g run40)" "run40=0" "bk run --orchestrated lanza el agente"
+  check_eq "$(g prop41)" "prop41=no" "y su PR no propone reviewer (lo lanza el orquestador)"
+  check_eq "$(g run42)" "run42=0" "bk run sin --orchestrated lanza el agente"
+  check_eq "$(g prop43)" "prop43=si" "y su PR sí propone reviewer"
   check_eq "$(g approve)" "approve=0" "bk approve la lanza desde cualquier carpeta"
   check_eq "$(g aprobada)" "aprobada=in_progress 1" "la propuesta pasa a in_progress con su ventana"
   check_eq "$(g approve2)" "approve2=1" "una tarea ya aprobada no se aprueba dos veces"

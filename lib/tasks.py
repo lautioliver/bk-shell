@@ -6,6 +6,7 @@ Cada agente que lanza `bk run`, `bk review` o `bk fix` trabaja sobre una tarea c
 ${XDG_STATE_HOME:-~/.local/state}/bk/tasks). El agente recibe esa carpeta en BK_TASK_DIR.
 
   tasks.py create <proyecto> <id> --role R [--ref N] [--pr N] [--repo R] [--worktree W] [--window V] [--pending]
+                                     [--orchestrated]
                                      crea la tarea; si ya hay una activa con ese id, la imprime y sale con 3
   tasks.py start <dir> [--window V]   pending -> in_progress (al lanzar el agente)
   tasks.py done <resultado> [arg]     el agente cierra su tarea (lee BK_TASK_DIR): pr <n> | blockers |
@@ -107,7 +108,8 @@ def task_dir(d):
     return d
 
 
-def create(project, tid, role, ref=None, pr=None, worktree=None, window=None, pending=False, origin=None, repo=None):
+def create(project, tid, role, ref=None, pr=None, worktree=None, window=None, pending=False, origin=None, repo=None,
+           orchestrated=False):
     """Crea la tarea. Si existe una activa con ese id devuelve (dir, False); si existe terminada, la guarda
     aparte (<id>~<fecha>, D9: no se borra) y crea una nueva."""
     base = os.path.join(root(), safe(project, "proyecto"))
@@ -131,6 +133,8 @@ def create(project, tid, role, ref=None, pr=None, worktree=None, window=None, pe
         for k, v in (("ref", ref), ("pr", pr), ("repo", repo), ("worktree", worktree), ("window", window), ("from", origin)):
             if v:
                 task[k] = int(v) if k == "pr" else v
+        if orchestrated:   # lo lanzó un orquestador: él lanza al reviewer, bk no lo propone (ADR-005, enmienda de D6)
+            task["orchestrated"] = True
         append_event(d, task, "task.created", role=role, status=task["status"])
         write(d, task)
     return d, True
@@ -185,7 +189,9 @@ def cmd_done(args):
     if task is None:
         raise Usage(f"la tarea {read(d)['id']} ya estaba cerrada ({read(d)['status']})")
     print(f"{task['id']}: {task['status']} ({kind}{f' #{pr}' if pr else ''})")
-    if kind == "pr" and task.get("role") in REVIEWED_BY:
+    if kind == "pr" and task.get("role") in REVIEWED_BY and task.get("orchestrated"):
+        print("sin propuesta de reviewer: lo lanza el orquestador")
+    elif kind == "pr" and task.get("role") in REVIEWED_BY:
         rd, new = create(task["project"], f"pr{pr}-reviewer", "reviewer", ref=f"#{pr}", pr=pr, pending=True,
                          origin=task["id"], repo=task.get("repo"))
         if new:
@@ -311,6 +317,8 @@ def main(argv):
         for a in it:
             if a == "--pending":
                 opts["pending"] = True
+            elif a == "--orchestrated":
+                opts["orchestrated"] = True
             elif a in ("--role", "--ref", "--pr", "--repo", "--worktree", "--window"):
                 opts[a[2:]] = next(it, None)
             else:
