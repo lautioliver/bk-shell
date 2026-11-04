@@ -54,8 +54,8 @@ def root():
     return os.path.join(state, "bk", "tasks")
 
 
-def now_iso():
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+def now_iso():   # ISO 8601 en UTC con milisegundos: dos tareas del mismo segundo se ordenan igual
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def safe(name, what):
@@ -202,8 +202,9 @@ def find(window):
             continue
         if t.get("status") not in ACTIVE or t.get("window") != window:
             continue
-        if best is None or t.get("created", "") > best[1]:
-            best = (d, t.get("created", ""))
+        k = ("~" not in os.path.basename(d), t.get("created", ""))
+        if best is None or k > best[1]:
+            best = (d, k)
     return best[0] if best else None
 
 

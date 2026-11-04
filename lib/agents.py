@@ -277,8 +277,10 @@ def task_by_window():
         w = t.get("window")
         if not w:
             continue
-        key = (t.get("status") in TK.ACTIVE, t.get("created", ""))
-        if w not in out or key > (out[w].get("status") in TK.ACTIVE, out[w].get("created", "")):
+        # activa primero; después la vigente (no una guardada aparte como <id>~<fecha>); después la más nueva
+        def key(x):
+            return (x.get("status") in TK.ACTIVE, "~" not in os.path.basename(x.get("dir", "")), x.get("created", ""))
+        if w not in out or key(t) > key(out[w]):
             out[w] = t
     return out
 
