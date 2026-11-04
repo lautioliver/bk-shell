@@ -4,6 +4,7 @@ set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"; ROOT="$(dirname "$HERE")"
 source "$HERE/lib.sh"
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
+export BK_TASKS_DIR="$TMP/tasks"   # nunca tus tareas reales
 
 for f in bin/bk install.sh hooks/agent_state.sh; do bash -n "$ROOT/$f"; check $? "$f no tiene errores de sintaxis"; done
 "$ROOT/bin/bk" help >/dev/null; check $? "bk help funciona"
