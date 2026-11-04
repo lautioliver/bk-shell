@@ -10,6 +10,9 @@
 
   checkpoints.py [--json] [--project <ruta>] [--no-refresh]
 
+Un PR sin movimiento hace más de 14 días (BK_CHECKPOINTS_STALE_DAYS) va marcado "stale" y al final: el monitor los
+junta en una línea, igual que las lecciones.
+
 Los PRs salen de la caché que escribe `bk _prs` (GitHub, cada ~2 min, en segundo plano); el resto es local.
 Sin --project, de todos los proyectos. Nunca falla por una fuente rota: la saltea.
 """
@@ -27,6 +30,7 @@ import tasks as TK    # noqa: E402
 
 PRS = os.environ.get("BK_PRS_CACHE") or os.path.expanduser("~/.cache/bk/checkpoints_prs.json")
 PRS_TTL = 120
+STALE_DAYS = int(os.environ.get("BK_CHECKPOINTS_STALE_DAYS") or 14)   # un PR sin movimiento hace más: "viejo"
 LESSONS = os.path.join(os.path.expanduser(os.environ.get("BARRILETE_VAULT", "~/Documents/Obsidian Vault")),
                        "agents", "lessons")
 
@@ -79,6 +83,15 @@ def plans(project=None):
     return out
 
 
+def age_days(iso):
+    """Días desde un ISO 8601 en UTC (updatedAt de GitHub), o None si no se entiende."""
+    try:
+        import calendar
+        return int((time.time() - calendar.timegm(time.strptime(iso[:19], "%Y-%m-%dT%H:%M:%S"))) // 86400)
+    except (TypeError, ValueError):
+        return None
+
+
 def prs(project=None):
     try:
         with open(PRS) as f:
@@ -91,8 +104,13 @@ def prs(project=None):
         repo = p.get("repo", "")
         if mine and repo.split("/")[-1] != mine:
             continue
-        out.append({"kind": p.get("kind", "merge"), "title": p.get("title", ""), "where": repo.split("/")[-1],
-                    "repo": repo, "number": p.get("number"), "url": p.get("url", "")})
+        c = {"kind": p.get("kind", "merge"), "title": p.get("title", ""), "where": repo.split("/")[-1],
+             "repo": repo, "number": p.get("number"), "url": p.get("url", "")}
+        days = age_days(p.get("updated"))
+        if days is not None:   # una caché de antes de este cambio no trae la fecha: no se marca vieja
+            c["days"] = days
+            c["stale"] = days > STALE_DAYS
+        out.append(c)
     return out
 
 
@@ -138,7 +156,7 @@ def items(project=None, refresh=True):
         except Exception:   # una fuente rota no tapa a las demás
             continue
     order = {"plan": 0, "reviewer": 1, "review": 2, "merge": 3, "lesson": 4}
-    out.sort(key=lambda c: order.get(c["kind"], 9))
+    out.sort(key=lambda c: (bool(c.get("stale")), order.get(c["kind"], 9)))   # los viejos, al final
     for c in out:
         what, todo = KINDS.get(c["kind"], (c["kind"], ""))
         c["what"] = what
@@ -168,7 +186,8 @@ def main(argv):
         return 0
     for c in cs:
         num = f"#{c['number']} " if c.get("number") else ""
-        print(f"◆ {c['what']}: {num}{c['title']}  ({c['where']})\n    → {c['todo']}")
+        old = f", sin movimiento hace {c['days']} días" if c.get("stale") else ""
+        print(f"◆ {c['what']}: {num}{c['title']}  ({c['where']}{old})\n    → {c['todo']}")
     return 0
 
 

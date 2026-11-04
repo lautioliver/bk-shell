@@ -369,3 +369,40 @@ class Checkpoints(unittest.TestCase):
             self.CK.refresh_prs()
         self.assertEqual(len(calls), 1)
 
+    def test_prs_viejos_marcados_y_al_final(self):
+        old = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 25 * 86400))
+        new = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 3600))
+        with open(self.CK.PRS, "w") as f:
+            json.dump([{"kind": "merge", "repo": "a/vet", "number": 13, "updated": old},
+                       {"kind": "merge", "repo": "a/kit", "number": 5, "updated": new},
+                       {"kind": "review", "repo": "a/kit", "number": 6}], f)   # sin fecha: caché vieja
+        cs = self.CK.items(refresh=False)
+        self.assertEqual([c["number"] for c in cs], [6, 5, 13])
+        by = {c["number"]: c for c in cs}
+        self.assertTrue(by[13]["stale"])
+        self.assertEqual(by[13]["days"], 25)
+        self.assertFalse(by[5]["stale"])
+        self.assertNotIn("stale", by[6])
+
+
+
+class MonitorAgrupa(unittest.TestCase):
+    """Te esperan no se llena: las lecciones y los PRs sin movimiento van en una línea cada grupo."""
+
+    def test_lecciones_y_prs_viejos_en_una_linea(self):
+        import monitor as M
+        mon = M.Monitor()
+        mon.events, mon.agents = [], []
+        lesson = {"kind": "lesson", "what": "lección propuesta", "where": "kit", "todo": "aceptala o descartala"}
+        mon.checkpoints = ([dict(lesson, title=f"lección {i}") for i in range(10)]
+                           + [{"kind": "merge", "what": "PR listo para mergear", "title": "viejo", "where": "vet", "number": n,
+                               "todo": "gh pr merge", "stale": True, "days": 25} for n in (13, 14)]
+                           + [{"kind": "merge", "what": "PR listo para mergear", "title": "nuevo", "where": "kit", "number": 5,
+                               "todo": "gh pr merge 5", "stale": False, "days": 0}])
+        t = STRIP.sub("", "\n".join(M.frame(mon, 160, 60, 0, "agents", 0, None)))
+        self.assertIn("10 lecciones propuestas", t)
+        self.assertNotIn("lección 3", t)
+        self.assertIn("2 PRs sin movimiento hace más de 14 días (vet#13, vet#14; el más viejo, 25 días)", t)
+        self.assertIn("#5 nuevo", t)
+        self.assertIn("11 te esperan", t.splitlines()[0])   # 10 lecciones + el PR nuevo; los viejos no cuentan
+

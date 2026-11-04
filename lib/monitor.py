@@ -471,9 +471,25 @@ def waiting_rows(mon, W):
         q = f" {AMBER}«{G.cut(a['question'], W - 40)}»{RST}" if a.get("question") else ""
         rows.append(G.cut(f"{col}{g}{RST} {TEXT}{BOLD}{G.fit(name_of(a), 16)}{RST} {col}{st}{RST}{q}"
                           f" {MUTED}· hace {ago(a['mins'])} · bk say {name_of(a)} \"…\"{RST}", W))
-    for c in mon.checkpoints:   # lo que solo vos podés hacer (bk checkpoints)
+    # lo que solo vos podés hacer (bk checkpoints): uno por línea, salvo las lecciones y los PRs sin movimiento,
+    # que van en una línea cada grupo (el detalle está en bk checkpoints)
+    lessons = [c for c in mon.checkpoints if c["kind"] == "lesson"]
+    stale = [c for c in mon.checkpoints if c.get("stale")]
+    for c in mon.checkpoints:
+        if c in lessons or c in stale:
+            continue
         num = f"#{c['number']} " if c.get("number") else (f"{c['id']} " if c.get("id") else "")
         rows.append(G.cut(f"{AMBER}◆{RST} {TEXT}{BOLD}{c['what']}{RST} {num}{c['title']} {MUTED}({c['where']}) · {c['todo']}{RST}", W))
+    if len(lessons) == 1:
+        c = lessons[0]
+        rows.append(G.cut(f"{AMBER}◆{RST} {TEXT}{BOLD}{c['what']}{RST} {c['title']} {MUTED}({c['where']}) · {c['todo']}{RST}", W))
+    elif lessons:
+        rows.append(G.cut(f"{AMBER}◆{RST} {TEXT}{BOLD}{len(lessons)} lecciones propuestas{RST} "
+                          f"{MUTED}· {lessons[0]['todo']}{RST}", W))
+    if stale:
+        nums = ", ".join(f"{c['where']}#{c['number']}" for c in stale[:4]) + (" …" if len(stale) > 4 else "")
+        rows.append(G.cut(f"{MUTED}◇ {len(stale)} PR{'s' if len(stale) != 1 else ''} sin movimiento hace más de "
+                          f"{CK.STALE_DAYS} días ({nums}; el más viejo, {max(c['days'] for c in stale)} días) · bk checkpoints{RST}", W))
     return rows
 
 
@@ -565,7 +581,9 @@ def headline(mon):
     ags = [a for a in mon.agents if a["kind"] != "chat"]
     chats = [a for a in mon.agents if a["kind"] == "chat"]
     busy = sum(1 for a in ags if a["state"] in ("working", "background") and not a.get("note"))
-    waits = sum(1 for a in mon.agents if not a.get("note") and (a["asks"] or a["state"] == "waiting")) + len(mon.checkpoints)
+    # los PRs sin movimiento no cuentan como "te esperan": siguen en la lista, apagados
+    waits = sum(1 for a in mon.agents if not a.get("note") and (a["asks"] or a["state"] == "waiting")) \
+        + sum(1 for c in mon.checkpoints if not c.get("stale"))
     parts = [f"{len(ags)} agente{'s' if len(ags) != 1 else ''}" + (f" ({busy} trabajando)" if busy else ""),
              f"{len(chats)} chat{'s' if len(chats) != 1 else ''}"]
     parts.append(f"{AMBER}{BOLD}{waits} te espera{'n' if waits != 1 else ''}{RST}{MUTED}" if waits else f"{GREEN}nadie te espera{RST}{MUTED}")
