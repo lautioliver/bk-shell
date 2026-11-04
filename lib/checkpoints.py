@@ -40,13 +40,18 @@ KINDS = {
 }
 
 
+_asked = [0.0]   # cuándo se pidió la última actualización de PRs (en este proceso)
+
+
 def refresh_prs():
     """Si la caché de PRs es vieja, la pide de nuevo en segundo plano (no espera a GitHub)."""
     try:
         age = time.time() - os.path.getmtime(PRS)
     except OSError:
         age = 1e9
-    if age > PRS_TTL and not os.environ.get("BK_CHECKPOINTS_OFFLINE"):
+    # una vez cada PRS_TTL como mucho: sin red la caché no se renueva y el monitor llama cada 2 s
+    if age > PRS_TTL and time.time() - _asked[0] > PRS_TTL and not os.environ.get("BK_CHECKPOINTS_OFFLINE"):
+        _asked[0] = time.time()
         try:
             subprocess.Popen([os.path.join(os.path.dirname(HERE), "bin", "bk"), "_prs"],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)

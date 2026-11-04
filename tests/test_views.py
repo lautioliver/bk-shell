@@ -357,3 +357,15 @@ class Checkpoints(unittest.TestCase):
     def test_el_riel_ya_no_tiene_checkpoints(self):
         self.assertFalse(hasattr(rail, "card_checkpoints"))
 
+    def test_pide_los_prs_una_vez_cada_tanto(self):
+        import subprocess
+        calls = []
+        self.addCleanup(setattr, subprocess, "Popen", subprocess.Popen)
+        subprocess.Popen = lambda *a, **k: calls.append(a)
+        os.environ.pop("BK_CHECKPOINTS_OFFLINE", None)
+        self.addCleanup(os.environ.__setitem__, "BK_CHECKPOINTS_OFFLINE", "1")
+        self.CK._asked[0] = 0
+        for _ in range(5):   # sin caché (sin red): una sola vez, no cada refresco del monitor
+            self.CK.refresh_prs()
+        self.assertEqual(len(calls), 1)
+
