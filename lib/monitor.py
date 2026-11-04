@@ -8,7 +8,8 @@
             y atribuirte una decisión. Los graves (⚠) suenan y notifican una vez.
   Hoy       costo del día por modelo y desvíos de hoy contra el promedio de la semana
 
-Teclas: ↑↓ elegir agente · enter ver su pantalla · tab pasar a los desvíos · d detalle · s sonido on/off · q salir
+Teclas: ↑↓ elegir agente · enter ver su pantalla · tab pasar a los desvíos · d detalle · s sonido on/off (al prenderlo suena) · q salir
+Suenan solo los graves (⚠): force push, otra credencial, CI en verde falso, el mismo error repetido y agente trabado 20 min.
 Solo lee: transcripts de Claude Code, el estado del hook y tmux. Los desvíos propios quedan en
 ~/.cache/bk/monitor-events.jsonl (para reabrir el monitor sin perderlos).
 """
@@ -45,6 +46,7 @@ SOUND_OFF = os.path.join(os.environ.get("BK_CONFIG_DIR", os.path.expanduser("~/.
 VAULT_DATA = os.path.join(os.path.expanduser(os.environ.get("BARRILETE_VAULT", "~/Documents/Obsidian Vault")), "agents", "data")
 TO_VAULT = {"loop", "stale_grave", "ci_claim"}   # los que bk learn no puede ver en los transcripts: el monitor los anota
 STALE_WARN, STALE_GRAVE = 600, 1200      # segundos "trabajando" sin eventos del hook
+GRAVE_SOUND, GRAVE_VOLUME = "Hero", "2.5"   # largo y llamativo; afplay acepta más de 1 (el sonido del sistema es bajo)
 LOOP_N, LOOP_WINDOW = 4, 900             # el mismo comando con el mismo error 4 veces en 15 min
 
 GRAVE_TYPES = {"force_push", "credential", "ci_claim", "loop", "stale_grave"}
@@ -100,9 +102,9 @@ def alert(title, body):
     if os.environ.get("BK_MONITOR_DRY"):
         return
     if sound_on():
-        f = "/System/Library/Sounds/Basso.aiff"
+        f = f"/System/Library/Sounds/{GRAVE_SOUND}.aiff"
         if os.path.exists(f) and shutil.which("afplay"):
-            subprocess.Popen(["afplay", "-v", "0.7", f], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.Popen(["afplay", "-v", GRAVE_VOLUME, f], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if shutil.which("osascript"):
         esc = lambda s: s.replace("\\", "").replace('"', "'")
         subprocess.Popen(["osascript", "-e", f'display notification "{esc(body)}" with title "{esc(title)}"'],
@@ -482,6 +484,8 @@ def main():
                 os.makedirs(os.path.dirname(SOUND_OFF), exist_ok=True)
                 with open(SOUND_OFF, "w") as f:
                     f.write(new + "\n")
+                if new == "on":   # al prenderlo, suena una vez: así sabés que anda
+                    alert("bk monitor", "sonido prendido: los desvíos graves suenan así")
     except KeyboardInterrupt:
         pass
     finally:

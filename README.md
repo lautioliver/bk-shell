@@ -67,7 +67,7 @@ quedó sin commitear, en una sola sesión de tmux.
   (título, estado, herramienta, costo de hoy, subagentes) y los desvíos en vivo: bloqueos de hooks y barandas,
   `red.sh`/`verify.py` que fallan, correcciones e interrupciones tuyas, permisos rechazados, agentes trabados, el mismo
   error repetido, force push, otra credencial, «CI en verde» con el CI rojo y decisiones que te atribuyen. Los graves
-  suenan y notifican una vez. `enter` muestra la pantalla de un agente, `tab` + `d` el detalle de un desvío.
+  suenan (Hero, fuerte) y notifican una vez. `enter` muestra la pantalla de un agente, `tab` + `d` el detalle de un desvío.
 - **Estado real de cada agente**: trabajando, te espera (permiso, confianza en la carpeta, plan por aprobar),
   en segundo plano (comandos, monitores o subagentes que siguen corriendo) o listo.
 - **Stats**: mapa de actividad, modelo favorito, rachas y costo equivalente en API de todo tu historial de Claude Code.
