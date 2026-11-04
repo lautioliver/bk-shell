@@ -664,13 +664,13 @@ cmd_prs() {
   gh api graphql -f query='
     { mine: search(query: "is:pr is:open author:@me archived:false draft:false", type: ISSUE, first: 30) {
         nodes { ... on PullRequest {
-          number title url reviewDecision
+          number title url reviewDecision updatedAt
           repository { nameWithOwner }
           reviews(last: 1) { totalCount nodes { body submittedAt } }
           commits(last: 1) { nodes { commit { committedDate statusCheckRollup { state } } } }
         } } }
       asked: search(query: "is:pr is:open review-requested:@me archived:false", type: ISSUE, first: 20) {
-        nodes { ... on PullRequest { number title url repository { nameWithOwner } } } } }' 2>/dev/null \
+        nodes { ... on PullRequest { number title url updatedAt repository { nameWithOwner } } } } }' 2>/dev/null \
   | jq '[(.data.mine.nodes[]
           # /review-pr publica siempre como comentario, aunque tenga bloqueantes: hay que leer la última
           # review. Listo = CI verde, última review sin sección "Bloqueante/Blocking" y sin commits
@@ -683,8 +683,8 @@ cmd_prs() {
                    # La sección existe siempre: bloquea solo si no dice "Ninguno/None"
                    and (($r.body // "") | test("(^|\\n)#+\\s*(Bloqueantes?|Blocking|Blockers?)\\b[^\\n]*\\n\\s*(?!(Ningun[oa]|None|No hay|Sin bloqueantes)\\b)\\S"; "i") | not)
                    and (($c.committedDate // "") <= ($r.submittedAt // "")))
-          | {kind: "merge", repo: .repository.nameWithOwner, number, title, url}),
-         (.data.asked.nodes[] | {kind: "review", repo: .repository.nameWithOwner, number, title, url})]' \
+          | {kind: "merge", repo: .repository.nameWithOwner, number, title, url, updated: .updatedAt}),
+         (.data.asked.nodes[] | {kind: "review", repo: .repository.nameWithOwner, number, title, url, updated: .updatedAt})]' \
     > "$CACHE.tmp" 2>/dev/null && [ -s "$CACHE.tmp" ] && mv "$CACHE.tmp" "$CACHE"
   rm -f "$CACHE.tmp"; rmdir "$lock" 2>/dev/null
 }
