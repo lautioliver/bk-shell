@@ -120,20 +120,20 @@ def roles_profile(top):
 
 
 _profile = {"t": 0, "v": "—"}
-_cuenta = {"t": 0, "v": ""}
+_account = {"t": 0, "v": ""}
 
 
 def session_account():
-    """La cuenta de esta sesión (bk cuenta usar): "" si es la principal en los dos proveedores."""
-    if time.time() - _cuenta["t"] > 5:
+    """La cuenta de esta sesión (bk account use): "" si es la default en los dos proveedores."""
+    if time.time() - _account["t"] > 5:
         pane = os.environ.get("TMUX_PANE", "")
         got = []
         for prov in ("claude", "codex"):
-            v = sh("tmux", "show-options", "-qv", *(["-t", pane] if pane else []), f"@bk_cuenta_{prov}").strip()
-            if v and v != "principal":
+            v = sh("tmux", "show-options", "-qv", *(["-t", pane] if pane else []), f"@bk_account_{prov}").strip()
+            if v and v != "default":
                 got.append(v if prov == "claude" else f"codex {v}")
-        _cuenta["v"], _cuenta["t"] = " · ".join(got), time.time()
-    return _cuenta["v"]
+        _account["v"], _account["t"] = " · ".join(got), time.time()
+    return _account["v"]
 
 
 def wait_kind(s):

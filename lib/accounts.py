@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""bk cuenta: cuentas de Claude Code o Codex por sesión, sin perder las conversaciones.
+"""bk account: cuentas de Claude Code o Codex por sesión, sin perder las conversaciones.
 
 Cada cuenta es una carpeta de config propia (CLAUDE_CONFIG_DIR o CODEX_HOME) en
-${BK_CUENTAS_DIR:-${XDG_STATE_HOME:-~/.local/state}/bk/cuentas}/<nombre>. Lo compartido (las
+${BK_ACCOUNTS_DIR:-${XDG_STATE_HOME:-~/.local/state}/bk/accounts}/<nombre>. Lo compartido (las
 conversaciones, settings, skills, hooks…) es un symlink a la carpeta principal; lo propio de cada cuenta
 son las credenciales (Claude Code las guarda en el llavero con un sufijo por carpeta) y .claude.json.
-La cuenta "principal" es la de siempre (~/.claude, ~/.codex) y no tiene carpeta.
+La cuenta "default" es la de siempre (~/.claude, ~/.codex) y no tiene carpeta.
 
-  cuentas.py list [--json]              las cuentas, con su proveedor y si tienen sesión iniciada
-  cuentas.py new <claude|codex> <nombre>  crear la carpeta (el login lo hace bk)
-  cuentas.py provider <nombre>          claude | codex (principal: vacío)
-  cuentas.py env <nombre>               VAR=valor para lanzar con esa cuenta (repara los symlinks)
+  accounts.py list [--json]              las cuentas, con su proveedor y si tienen sesión iniciada
+  accounts.py new <claude|codex> <nombre>  crear la carpeta (el login lo hace bk)
+  accounts.py provider <nombre>          claude | codex (default: vacío)
+  accounts.py env <nombre>               VAR=valor para lanzar con esa cuenta (repara los symlinks)
 """
 import json
 import os
@@ -20,7 +20,7 @@ import sys
 
 HOME = os.path.expanduser("~")
 STATE = os.environ.get("XDG_STATE_HOME") or os.path.join(HOME, ".local", "state")
-ROOT = os.environ.get("BK_CUENTAS_DIR") or os.path.join(STATE, "bk", "cuentas")
+ROOT = os.environ.get("BK_ACCOUNTS_DIR") or os.path.join(STATE, "bk", "accounts")
 MAIN = {"claude": os.environ.get("BK_CLAUDE_MAIN") or os.path.join(HOME, ".claude"),
         "codex": os.environ.get("BK_CODEX_MAIN") or os.path.join(HOME, ".codex")}
 VAR = {"claude": "CLAUDE_CONFIG_DIR", "codex": "CODEX_HOME"}
@@ -38,7 +38,7 @@ NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,30}$")
 
 
 def die(msg):
-    print(f"bk cuenta: {msg}", file=sys.stderr)
+    print(f"bk account: {msg}", file=sys.stderr)
     sys.exit(1)
 
 
@@ -92,8 +92,8 @@ def seed_claude_json(d):
 def new(prov, name):
     if prov not in VAR:
         die(f"proveedor desconocido: {prov} (claude | codex)")
-    if name == "principal" or not NAME.match(name):
-        die(f"nombre inválido: {name!r} (minúsculas, números y guiones; 'principal' es la de siempre)")
+    if name == "default" or not NAME.match(name):
+        die(f"nombre inválido: {name!r} (minúsculas, números y guiones; 'default' es la de siempre)")
     d = path(name)
     if os.path.exists(d):
         die(f"ya existe la cuenta {name} ({provider(name) or '?'}): {d}")
@@ -107,11 +107,11 @@ def new(prov, name):
 
 
 def env(name):
-    if name in ("", "principal"):
+    if name in ("", "default"):
         return
     prov = provider(name)
     if not prov:
-        die(f"no existe la cuenta {name} (bk cuenta)")
+        die(f"no existe la cuenta {name} (bk account)")
     link_shared(name)
     print(f"{VAR[prov]}={path(name)}")
 
@@ -138,10 +138,10 @@ def status(prov, d):
 
 
 def listing(as_json):
-    rows = [{"name": "principal", "provider": p, "dir": MAIN[p]} for p in ("claude", "codex")]
+    rows = [{"name": "default", "provider": p, "dir": MAIN[p]} for p in ("claude", "codex")]
     rows += [{"name": n, "provider": provider(n), "dir": path(n)} for n in names()]
     for r in rows:
-        r["logged_in"], r["who"] = status(r["provider"], None if r["name"] == "principal" else r["dir"])
+        r["logged_in"], r["who"] = status(r["provider"], None if r["name"] == "default" else r["dir"])
     if as_json:
         print(json.dumps(rows, ensure_ascii=False))
         return
