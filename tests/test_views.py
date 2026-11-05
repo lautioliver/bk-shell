@@ -489,3 +489,42 @@ class Detectores(unittest.TestCase):
             f.write(json.dumps({"type": "user", "message": {"content": "ok, seguí"}}) + "\n")
         self.assertTrue(self.D.person_decided(p))
 
+
+class ParserDeReviews(unittest.TestCase):
+    """El mismo parser que barrilete-workspace: la clase es el id de classes.yml del kit (ADR-006) y los bloqueantes
+    salen del cuerpo de la review, en inglés o castellano."""
+
+    def setUp(self):
+        import deviations as D
+        self.D = D
+
+    def test_la_etiqueta_de_review_pr_manda(self):
+        # el texto diría "docs desactualizados" por palabras clave; la etiqueta dice otra cosa y gana
+        self.assertEqual(self.D.finding_class("**[ci-claim] x.md:** still says the old flag"), "ci-claim")
+        self.assertEqual(self.D.finding_class("[test-cannot-fail] the case passes anyway"), "test-cannot-fail")
+        self.assertEqual(self.D.finding_class("still says the old flag"), "stale-docs")   # sin etiqueta: palabras clave
+        self.assertEqual(self.D.finding_class("nada que ver"), "other")
+        self.assertEqual(self.D.finding_class("x [ci-claim] en el medio"), "other")         # solo al principio
+
+    def test_cada_id_tiene_su_nombre(self):
+        ids = {c for c, _ in self.D.FINDING_CLASSES} | {"other"}
+        self.assertEqual(ids, set(self.D.CLASS_LABELS))
+
+    def test_bloqueantes(self):
+        rb = self.D.review_blockers
+        casos = [
+            ("### Blocking\n\n1. **a.py:** rompe\n2. **b.py:** también\n\n### To fix\n\n1. x", 2),
+            ("### Bloqueantes\n\nNinguno.\n\n### A corregir\n\n1. x", 0),
+            ("**Bloqueantes:** ninguno.", 0),
+            ("**Blocking:** none.", 0),
+            ("**Sin bloqueantes.** Todo bien.", 0),
+            ("**Un bloqueante:** falta el test.", 1),
+            ("### Blocking\n\nNone in the code. **Merge gate (a person's decision):** aprobar el ADR.", 0),
+            ("### Blocking\n\n1. **Merge gate (a person's decision):** aprobar el ADR.\n2. **a.py:** rompe", 1),
+            ("### Blocking\n\n```\n**1. no es un ítem**\n```\n**1. Uno de verdad**\n   1. paso de la repro", 1),
+            ("### Blocking\n\n1. **a.py:** rompe\n**To fix**\n\n1. **b.py:** no bloquea", 1),
+            ("LGTM", None),
+        ]
+        for body, n in casos:
+            self.assertEqual(rb(body), n, body)
+

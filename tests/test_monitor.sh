@@ -78,7 +78,7 @@ PY
 check_eq "$(grep '^ask' <<<"$DV")" "ask 0" "cerrar una pregunta (AskUserQuestion) no es un desvío"
 check_eq "$(grep '^bash' <<<"$DV")" "bash 1" "rechazar un comando sí"
 check_eq "$(grep '^items' <<<"$DV")" "items 2" "una review: solo los ítems de primer nivel de To fix (Blocking: None, Suggestions afuera)"
-check_eq "$(grep '^clases' <<<"$DV")" "clases metadatos del PR|entrada inesperada sin manejar" "los hallazgos se clasifican"
+check_eq "$(grep '^clases' <<<"$DV")" "clases pr-metadata|unhandled-input" "los hallazgos se clasifican"
 check_eq "$(grep '^chat' <<<"$DV")" "chat 0" "en un chat tuyo, env -u GH_CONFIG_DIR no es un desvío"
 
 finish

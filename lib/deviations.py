@@ -283,22 +283,22 @@ def agent_risks(b, ctx, is_agent, path=None):
 # ---------- hallazgos de reviews publicadas ----------
 FINDING_SECTION = re.compile(r"^\s*(#+\s*|\*\*)?(blocking|blockers?|bloqueantes?|to fix|para corregir|a corregir)\b", re.I)
 OTHER_SECTION = re.compile(r"^\s*(#+\s|\*\*(suggestions?|sugerencias?|questions?|preguntas?|verified|verificado)\b)", re.I)
-FINDING_CLASSES = [   # (clase, patrón) — la primera que coincide; "otro hallazgo" si ninguna
-    ("metadatos del PR", r"PR body|cuerpo del PR|PR's body|body of the PR|el cuerpo (dice|cita|todavía)|bloque (del rojo )?de otro|"
+FINDING_CLASSES = [   # (clase, patrón) — la primera que coincide; "other" si ninguna
+    ("pr-metadata", r"PR body|cuerpo del PR|PR's body|body of the PR|el cuerpo (dice|cita|todavía)|bloque (del rojo )?de otro|"
                          r"red block (is|from)|from another PR|de otro PR|n[uú]mero de PR"),
-    ("afirmación sobre el CI", r"\bflaky\b|por azar|\bCI\b[^.]{0,60}\b(verde|green)\b|claims? (the )?CI|afirma[^.]{0,30}CI"),
-    ("decisión no aprobada", r"no (lo |la )?aprob|not approved|nobody approved|nadie (la |lo )?aprob|outside (the |D\d)|fuera del ADR|"
+    ("ci-claim", r"\bflaky\b|por azar|\bCI\b[^.]{0,60}\b(verde|green)\b|claims? (the )?CI|afirma[^.]{0,30}CI"),
+    ("undecided-decision", r"no (lo |la )?aprob|not approved|nobody approved|nadie (la |lo )?aprob|outside (the |D\d)|fuera del ADR|"
                              r"regla nueva|new rule|sin tu (sí|aprobación)|without (your )?approval"),
-    ("test que no puede fallar", r"pass(es)? (even|anyway|when .{0,30}missing)|would still pass|still green|pasa(n)? (igual|aunque)|"
+    ("test-cannot-fail", r"pass(es)? (even|anyway|when .{0,30}missing)|would still pass|still green|pasa(n)? (igual|aunque)|"
                                  r"never fail|nunca falla|vacuous|without checking|sin chequear|forbidden (in|form)|formas? prohibid"),
-    ("docs desactualizados", r"outdated|out of date|stale|desactualizad|contradic|still says|todavía dice|sigue diciendo|"
+    ("stale-docs", r"outdated|out of date|stale|desactualizad|contradic|still says|todavía dice|sigue diciendo|"
                              r"no longer matches|ya no coincide"),
-    ("comando o flag mal usado", r"--[a-z][\w-]+[^.]{0,60}\b(only|solo|exact|exacto|no acepta|doesn'?t (match|accept)|takes only)"),
-    ("el texto no coincide con el código", r"does not match the code|doesn'?t match the code|no coincide con el código|"
+    ("wrong-command", r"--[a-z][\w-]+[^.]{0,60}\b(only|solo|exact|exacto|no acepta|doesn'?t (match|accept)|takes only)"),
+    ("text-code-mismatch", r"does not match the code|doesn'?t match the code|no coincide con el código|"
                                            r"the argument does not match|dice .{0,40} pero|says .{0,40} but"),
-    ("caso no cubierto", r"\bno (escalation )?rule\b|nothing triggers|nada (lanza|dispara)|\bskips?\b|\bignores?\b|se saltea|"
+    ("uncovered-case", r"\bno (escalation )?rule\b|nothing triggers|nada (lanza|dispara)|\bskips?\b|\bignores?\b|se saltea|"
                          r"ignora|not covered|no cubre|without the inputs|sin los datos|falls through|queda asignado sin"),
-    ("entrada inesperada sin manejar", r"traceback|crash|TypeError|KeyError|malformed|mal formad|null\b|hostil|hostile|edge case|"
+    ("unhandled-input", r"traceback|crash|TypeError|KeyError|malformed|mal formad|null\b|hostil|hostile|edge case|"
                                        r"caso borde|silently|en silencio|falls back silently"),
 ]
 
@@ -334,8 +334,99 @@ def review_findings(body):
     return [re.sub(r"\s+", " ", i).strip() for i in items if i.strip()]
 
 
+CLASS_TAG = re.compile(r"^[\s*_]*\[([a-z][a-z0-9-]*)\]")
+CLASS_LABELS = {   # para mostrar (bk learn, el vault); el id es el de docs/agents/classes.yml del kit
+    "pr-metadata": "metadatos del PR", "ci-claim": "afirmación sobre el CI", "undecided-decision": "decisión no aprobada",
+    "test-cannot-fail": "test que no puede fallar", "stale-docs": "docs desactualizados",
+    "wrong-command": "comando o flag mal usado", "text-code-mismatch": "el texto no coincide con el código",
+    "uncovered-case": "caso no cubierto", "unhandled-input": "entrada inesperada sin manejar", "other": "otro hallazgo",
+}
+
+
 def finding_class(text):
+    """La clase de un hallazgo: la etiqueta [id] que pone review-pr (ADR-006); sin etiqueta (reviews viejas),
+    la que adivinan las palabras clave; "other" si ninguna."""
+    m = CLASS_TAG.match(text or "")
+    if m:
+        return m.group(1)
     for name, pat in FINDING_CLASSES:
         if re.search(pat, text, re.I):
             return name
-    return "otro hallazgo"
+    return "other"
+
+
+# ---------- bloqueantes de una review (bk metrics; antes vivía en metrics.py) ----------
+# Bloqueantes de una review publicada (las escribe /review-pr, en inglés o castellano). Formatos reales:
+#   "### Blocking" / "### Bloqueantes" / "### Bloqueante (sigue)" + ítems numerados, párrafos en negrita o "None."
+#   "**Bloqueantes:** ninguno." / "**Blocking:** none."    "**Sin bloqueantes.**" / "No hay bloqueantes."
+# No cuentan: "None in the code. **Merge gate (a person's decision)…**", "Bloqueantes de la ronda 1: resueltos",
+# "Sugerencia (no bloqueante)".
+BLOCK_TITLE = re.compile(r"(?i)^(blocking|blockers?|bloqueantes?)(\s*\((sigue|cont\.?|continued)\))?\s*:?$")
+BLOCK_LABEL = re.compile(r"(?i)^\*\*(blocking|blockers?|bloqueantes?)\s*:\s*(?:\*\*)?\s*(.*)$")
+NONE_WORD = re.compile(r"(?i)^[*_\s]*(none|nothing|no blockers|ninguno|ninguna|nada|no hay|sin bloqueantes)\b")
+NO_BLOCKERS = re.compile(r"(?i)\b(sin bloqueantes|no hay bloqueantes|no encontr[ée] bloqueantes|no blockers|no blocking)\b")
+ONE_BLOCKER = re.compile(r"(?i)^\*\*(un|one) (bloqueante|blocker)\b")
+NEXT_SECTION = re.compile(r"(?i)^\*\*(to fix|a corregir|suggestions?|sugerencias?|questions?|preguntas|process|proceso"
+                          r"|out of scope|fuera de alcance)\b")
+NUMBERED = re.compile(r"^(\*\*)?\d+[a-z]?[.)]\s")
+GATE = re.compile(r"(?i)merge gate|compuerta de merge|decisi[óo]n de (una|la) persona|a person's decision")
+
+
+def _count_items(lines):
+    """Ítems de una sección de bloqueantes: numerados > párrafos en negrita > viñetas > texto suelto = 1."""
+    text = [l for l in lines if l.strip()]
+    if not text or NONE_WORD.match(text[0]):
+        return 0
+    top = [l for l in text if not l[0].isspace()]
+    # "**1. …**" o "1. **…**" es un hallazgo; un "1. Reserva de 110…" suelto bajo uno de esos es un paso
+    # de la reproducción y no cuenta
+    for pick in (lambda l: NUMBERED.match(l) and (l.startswith("**") or re.match(r"\d+[a-z]?[.)]\s+\*\*", l)),
+                 lambda l: NUMBERED.match(l),
+                 lambda l: l.startswith("**") and not re.match(r"(?i)\*\*(sugerencia|suggestion|por qu|why|nota|note)", l),
+                 lambda l: re.match(r"[-*] ", l)):
+        items = [l for l in top if pick(l)]
+        if items:
+            return sum(1 for l in items if not GATE.search(l[:200]))
+    return 0 if all(GATE.search(l) for l in text) else 1
+
+
+def review_blockers(body):
+    """Bloqueantes de una review; None si el cuerpo no dice nada de bloqueantes (review humana, LGTM)."""
+    lines, fence = [], False
+    for l in (body or "").splitlines():  # sin bloques de código: un "1." o "**" adentro no es un ítem
+        if l.lstrip().startswith("```"):
+            fence = not fence
+            continue
+        if not fence:
+            lines.append(l.rstrip())
+    found, total = False, 0
+    i = 0
+    while i < len(lines):
+        l = lines[i]
+        h = re.match(r"(#+)\s+(.*)", l)
+        lab = BLOCK_LABEL.match(l)
+        if h and BLOCK_TITLE.match(h.group(2).strip().strip("*").strip()):
+            lvl, j = len(h.group(1)), i + 1
+            while j < len(lines):
+                m = re.match(r"(#+)\s", lines[j])
+                if (m and len(m.group(1)) <= lvl) or NEXT_SECTION.match(lines[j]):
+                    break
+                j += 1
+            total += _count_items(lines[i + 1:j]); found = True; i = j
+            continue
+        if lab:
+            j = i + 1
+            if not lab.group(2).strip():  # "**Bloqueantes:**" y la lista abajo
+                while j < len(lines) and not (re.match(r"#+\s", lines[j]) or NEXT_SECTION.match(lines[j])
+                                              or re.match(r"^\*\*[^*]{1,40}:?\*\*\s*:?\s*$", lines[j])):
+                    j += 1
+            total += _count_items([lab.group(2)] + lines[i + 1:j]); found = True; i = j
+            continue
+        i += 1
+    if found:
+        return total
+    if any(ONE_BLOCKER.match(l) for l in lines):
+        return 1
+    if any(NO_BLOCKERS.search(l) for l in lines):
+        return 0
+    return None
