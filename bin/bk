@@ -66,6 +66,9 @@ uso: bk [comando] [--dry-run]
   checkpoints [--json]  lo que te espera: planes por aprobar, reviewers propuestos, PRs para revisar o
                     mergear y lecciones propuestas (lo mismo que "Te esperan" en bk monitor)
   roles             qué provider/modelo corre cada rol en este proyecto, y su modo
+  cuenta            cuentas de Claude o Codex por sesión, con las mismas conversaciones (bk cuenta help):
+                    nueva <claude|codex> <nombre> · usar <nombre> [--relanzar] · --cuenta <nombre> en
+                    cualquier lanzamiento
   sound [on|off|test]  sonido por tipo de pedido de los agentes: terminó, pregunta, permiso, error
   song [género]     radio por género (techno, house, rock, reggaeton, cachengue), tuya o cualquier url (bk song help)
   mode <rol>        cómo lo lanza el orquestador: main (la sesión principal), bk (ventana propia) o
@@ -116,6 +119,167 @@ agent_cmd() {
   esac
 }
 
+# ---------- cuentas por sesión (bk-shell#16) ----------
+# Cada cuenta es una carpeta de config (CLAUDE_CONFIG_DIR / CODEX_HOME) que comparte las conversaciones
+# con la principal (lib/cuentas.py). La sesión de tmux guarda la elegida en @bk_cuenta_<proveedor>;
+# los agentes la heredan por BK_CUENTA_<PROVEEDOR> en su pane.
+CUENTAS="$WS/lib/cuentas.py"
+upper() { printf '%s' "$1" | tr '[:lower:]' '[:upper:]'; }
+
+# La sesión de tmux desde donde se llama (los popups pasan BK_FROM)
+caller_session() {
+  [ -n "${TMUX:-}" ] || return 0
+  if [ -n "${BK_FROM:-}" ]; then printf '%s' "$BK_FROM"; return; fi
+  tmux display-message -p ${TMUX_PANE:+-t "$TMUX_PANE"} '#{session_name}' 2>/dev/null || true
+}
+
+# cuenta_de <proveedor> -> la cuenta para lo que se lance desde acá (vacío: la principal)
+# Orden: bk … --cuenta X (BK_CUENTA) > la del pane (la heredan los agentes) > la de la sesión de tmux.
+cuenta_de() {
+  local prov="$1" v="" s
+  if [ -n "${BK_CUENTA:-}" ]; then
+    [ "$BK_CUENTA" = principal ] && return 0
+    [ "$(python3 "$CUENTAS" provider "$BK_CUENTA")" = "$prov" ] && { printf '%s' "$BK_CUENTA"; return; }
+  fi
+  eval "v=\${BK_CUENTA_$(upper "$prov"):-}"
+  if [ -z "$v" ]; then
+    s=$(caller_session)
+    [ -z "$s" ] || v=$(tmux show-options -qv -t "$s" "@bk_cuenta_$prov" 2>/dev/null || true)
+  fi
+  [ "$v" = principal ] || printf '%s' "$v"
+}
+
+# cuenta_env <proveedor> -> líneas VAR=valor para tmux -e (nada si es la principal)
+cuenta_env() {
+  local prov="$1" c; c=$(cuenta_de "$prov")
+  [ -n "$c" ] || return 0
+  python3 "$CUENTAS" env "$c" || die "la cuenta $c no existe (bk cuenta)"
+  printf 'BK_CUENTA_%s=%s\n' "$(upper "$prov")" "$c"
+}
+
+# cuenta_args <proveedor>: llena el array CTA (declaralo local antes) con los -e de la cuenta
+cuenta_args() {
+  local out kv; out=$(cuenta_env "$1") || exit 1
+  CTA=()
+  while IFS= read -r kv; do [ -z "$kv" ] || CTA+=(-e "$kv"); done <<<"$out"
+}
+
+cmd_cuenta() {
+  local sub="${1:-}"; shift || true
+  case "$sub" in
+    ""|ls|list)
+      local s c x; s=$(caller_session)
+      python3 "$CUENTAS" list
+      if [ -n "$s" ]; then
+        c=$(tmux show-options -qv -t "$s" @bk_cuenta_claude 2>/dev/null || true)
+        x=$(tmux show-options -qv -t "$s" @bk_cuenta_codex 2>/dev/null || true)
+        info "en $s: claude ${c:-principal} · codex ${x:-principal}"
+      fi ;;
+    nueva|new)
+      local prov="${1:-}" name="${2:-}"
+      [ -n "$prov" ] && [ -n "$name" ] || die "bk cuenta nueva <claude|codex> <nombre>"
+      [ "$DRY" -eq 1 ] && { info "(dry-run: crearía la cuenta $prov/$name)"; return 0; }
+      python3 "$CUENTAS" new "$prov" "$name" >/dev/null || exit 1
+      info "cuenta $name creada: ahora el login de $prov (las conversaciones son las mismas de siempre)"
+      cuenta_login "$name" ;;
+    login)
+      [ -n "${1:-}" ] || die "bk cuenta login <nombre>"
+      cuenta_login "$1" ;;
+    usar|use)
+      cuenta_usar "$@" ;;
+    -h|--help|help)
+      cat <<'EOF'
+uso: bk cuenta                         las cuentas (● con sesión iniciada) y las de esta sesión
+     bk cuenta nueva <claude|codex> <nombre>   crear una cuenta y hacer su login
+     bk cuenta login <nombre>          volver a hacer el login de una cuenta
+     bk cuenta usar <nombre> [--relanzar]   usarla en esta sesión: lo que lances desde acá
+                                       (agentes, chats) corre con ella. --relanzar: el chat principal
+                                       también, retomando la misma conversación
+     bk cuenta usar principal [claude|codex]   volver a la de siempre
+     bk run|fix|review|plan|orchestrate … --cuenta <nombre>   solo para ese lanzamiento
+EOF
+      ;;
+    *) die "bk cuenta [nueva|login|usar] (bk cuenta help)" ;;
+  esac
+}
+
+cuenta_login() {
+  local name="$1" prov kv; prov=$(python3 "$CUENTAS" provider "$name")
+  [ -n "$prov" ] || die "no existe la cuenta $name (bk cuenta)"
+  kv=$(python3 "$CUENTAS" env "$name")
+  case "$prov" in
+    claude) env "$kv" claude auth login ;;
+    codex)  command -v codex >/dev/null || die "Codex CLI no está instalado"
+            env "$kv" codex login ;;
+  esac
+}
+
+cuenta_usar() {
+  local name="" relaunch=0 only=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --relanzar) relaunch=1 ;;
+      claude|codex) only="$1" ;;
+      *) name="$1" ;;
+    esac
+    shift
+  done
+  [ -n "$name" ] || die "bk cuenta usar <nombre> [--relanzar]"
+  local s; s=$(caller_session)
+  [ -n "$s" ] || die "bk cuenta usar va dentro de una sesión de bk (tmux)"
+  local provs=() p kv
+  if [ "$name" = principal ]; then
+    if [ -n "$only" ]; then provs=("$only"); else provs=(claude codex); fi
+  else
+    p=$(python3 "$CUENTAS" provider "$name"); [ -n "$p" ] || die "no existe la cuenta $name (bk cuenta)"
+    provs=("$p")
+  fi
+  [ "$DRY" -eq 1 ] && { info "(dry-run: $s usaría la cuenta $name)"; return 0; }
+  for p in "${provs[@]}"; do
+    if [ "$name" = principal ]; then
+      [ "$p" = claude ] && kv=CLAUDE_CONFIG_DIR || kv=CODEX_HOME
+      tmux set-option -u -t "$s" "@bk_cuenta_$p" 2>/dev/null || true
+      tmux set-environment -u -t "$s" "BK_CUENTA_$(upper "$p")" 2>/dev/null || true
+      tmux set-environment -u -t "$s" "$kv" 2>/dev/null || true
+    else
+      tmux set-option -t "$s" "@bk_cuenta_$p" "$name"
+      # También para los panes nuevos de la sesión (un split donde corrés claude a mano)
+      kv=$(python3 "$CUENTAS" env "$name")
+      tmux set-environment -t "$s" "${kv%%=*}" "${kv#*=}"
+      tmux set-environment -t "$s" "BK_CUENTA_$(upper "$p")" "$name"
+    fi
+  done
+  info "$s usa la cuenta $name: los agentes y chats que lances desde acá corren con ella"
+  if [ "$relaunch" = 1 ]; then
+    [[ " ${provs[*]} " == *" claude "* ]] && relaunch_chat "$s"
+  else
+    info "el chat principal sigue con la anterior hasta relanzarlo (bk cuenta usar $name --relanzar)"
+  fi
+}
+
+# relaunch_chat <sesión>: el chat principal vuelve a arrancar con la cuenta de la sesión, retomando su
+# conversación. No si está trabajando o esperando una respuesta tuya.
+relaunch_chat() {
+  local s="$1" pane f sid="" st="" dir top
+  pane=$(tmux list-panes -t "$s:main" -F '#{pane_id} #{pane_title}' 2>/dev/null | awk '/✿ chat/ {print $1; exit}')
+  [ -n "$pane" ] || die "no encontré el chat principal de $s"
+  # El registro más nuevo de ese pane (el hook de estado lo nombra con el id de la sesión de Claude)
+  while IFS= read -r f; do
+    grep -q "\"pane\": *\"$pane\"" "$f" 2>/dev/null || continue
+    sid=$(basename "$f" .json)
+    st=$(sed -nE 's/.*"state": *"([a-z]+)".*/\1/p' "$f" | head -1)
+    break
+  done < <(ls -t "$STATE_DIR"/*.json 2>/dev/null)
+  case "$st" in working|waiting|background) die "el chat está trabajando o te espera: relanzalo cuando termine" ;; esac
+  case "$sid" in bk-*) sid="" ;; esac
+  dir=$(tmux display-message -p -t "$pane" '#{pane_current_path}')
+  top=$(tmux show-environment -t "$s" BK_PROJECT 2>/dev/null | sed -n 's/^BK_PROJECT=//p' || true)
+  local CTA; BK_CUENTA="" BK_CUENTA_CLAUDE="" BK_FROM="$s" cuenta_args claude
+  tmux respawn-pane -k -t "$pane" -c "$dir" -e "BK_PROJECT=${top:-$dir}" "${CTA[@]+"${CTA[@]}"}" \
+    "claude${sid:+ --resume $sid}; exec \$SHELL"
+  info "chat relanzado${sid:+ (retoma $sid)}"
+}
+
 # ---------- tmux ----------
 need_tmux() { command -v tmux >/dev/null || die "falta tmux (brew install tmux)"; }
 
@@ -150,9 +314,11 @@ launch() {
   spec=$(role_spec "$role" "$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null || true)")
   provider=${spec%%/*}; model=${spec#*/}
   local full; full=$(agent_cmd "$provider" "$model" "$cmd")
+  local cta CTA; cta=$(cuenta_de "$provider"); cuenta_args "$provider"
 
   printf '%-8s %s · %s/%s\n  dir: %s\n  cmd: %s\n' "$win" "$role" "$provider" "$model" "$dir" "$full"
   [ -n "$tid" ] && printf '  tarea: %s\n' "$tid"
+  [ -n "$cta" ] && printf '  cuenta: %s\n' "$cta"
   [ "$DRY" -eq 1 ] && { info "(dry-run: no se lanzó nada)"; return 0; }
 
   need_tmux
@@ -166,6 +332,7 @@ launch() {
   fi
   local env=(-e "BARRILETE_ROLE=$role" -e "BARRILETE_MODEL=$model" -e "BARRILETE_PROVIDER=$provider")
   [ -n "$ref" ] && env+=(-e "BARRILETE_ISSUE=$ref")
+  env+=("${CTA[@]+"${CTA[@]}"}")
   if [ -n "$tid" ]; then
     local proj tdir rc=0 extra=(); proj=$(project_of "$dir")
     [ "$orch" = 1 ] && extra=(--orchestrated)
@@ -486,8 +653,13 @@ workspace() {
     local cols lines chat rail
     cols=$(tput cols 2>/dev/null || echo 200); lines=$(tput lines 2>/dev/null || echo 50)
     # El chat sobrevive a un /exit: vuelve a una shell en la misma carpeta
+    # La cuenta de donde se abre (bk cuenta usar, o BK_CUENTA=x bk) pasa a la sesión nueva; new-session -e
+    # también la deja en el entorno de la sesión, como bk cuenta usar
+    local CTA cx; cuenta_args claude; cx=$(cuenta_de codex)
     chat=$(tmux new-session -d -P -F '#{pane_id}' -s "$WS_SESSION" -n main -c "$dir" -x "$cols" -y "$lines" \
-           -e "BK_PROJECT=$top" "claude; exec \$SHELL")
+           -e "BK_PROJECT=$top" "${CTA[@]+"${CTA[@]}"}" "claude; exec \$SHELL")
+    [ ${#CTA[@]} -eq 0 ] || tmux set-option -t "$WS_SESSION" @bk_cuenta_claude "$(cuenta_de claude)"
+    [ -z "$cx" ] || { BK_FROM="$WS_SESSION" cuenta_usar "$cx" >/dev/null; }
     tmux set-environment -t "$WS_SESSION" BK_PROJECT "$top"
     [ -z "${BK_WS_NAME:-}" ] || tmux set-option -t "$WS_SESSION" @bk_name "$BK_WS_NAME"
     rail=$(tmux split-window -d -P -F '#{pane_id}' -h -l 34% -t "$chat" -c "$dir" -e "BK_PROJECT=$top" "bk rail")
@@ -664,10 +836,13 @@ cmd_chat() {
   top="$HOME/.bk/chats"; mkdir -p "$top"; name="c-suelto"
   n=1; while has_window "$name$([ $n -gt 1 ] && echo "-$n")"; do n=$((n + 1)); done
   [ $n -gt 1 ] && name="$name-$n"
+  local CTA kv; cuenta_args claude
   if tmux has-session -t "$SESSION" 2>/dev/null; then
-    pane=$(tmux new-window -d -P -F '#{pane_id}' -t "$SESSION:" -n "$name" -c "$top" "claude")
+    pane=$(tmux new-window -d -P -F '#{pane_id}' -t "$SESSION:" -n "$name" -c "$top" "${CTA[@]+"${CTA[@]}"}" "claude")
   else
-    pane=$(tmux new-session -d -P -F '#{pane_id}' -s "$SESSION" -n "$name" -c "$top" "claude")
+    pane=$(tmux new-session -d -P -F '#{pane_id}' -s "$SESSION" -n "$name" -c "$top" "${CTA[@]+"${CTA[@]}"}" "claude")
+    # Como en launch: que la cuenta de este chat no quede en el entorno de la sesión de agentes
+    for kv in "${CTA[@]+"${CTA[@]}"}"; do [ "$kv" = -e ] || tmux set-environment -u -t "$SESSION" "${kv%%=*}" 2>/dev/null || true; done
   fi
   tmux set-option -w -t "$SESSION:$name" remain-on-exit on >/dev/null
   case "$s" in bk*) ws_agent "$s" "$pane" ;; *) info "chat nuevo: $name (bk go $name)" ;; esac
@@ -977,7 +1152,18 @@ cmd_run() {
 
 # ---------- main ----------
 ARGS=()
-for a in "$@"; do [ "$a" = "--dry-run" ] && DRY=1 || ARGS+=("$a"); done
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run) DRY=1 ;;
+    # --cuenta X: solo para este lanzamiento (bk-shell#16); lo leen launch y los chats
+    --cuenta) [ -n "${2:-}" ] || die "--cuenta necesita un nombre (bk cuenta)"
+              [ "$2" = principal ] || [ -n "$(python3 "$WS/lib/cuentas.py" provider "$2")" ] \
+                || die "no existe la cuenta $2 (bk cuenta)"
+              export BK_CUENTA="$2"; shift ;;
+    *) ARGS+=("$1") ;;
+  esac
+  shift
+done
 set -- "${ARGS[@]+"${ARGS[@]}"}"
 
 case "${1:-}" in
@@ -1001,6 +1187,7 @@ case "${1:-}" in
   _ended)      python3 "$TASKS" ended "${2:?}" || true; sketchybar --trigger agent_update >/dev/null 2>&1 || true ;;
   _drain)      task_drain "${2:?}" "${3:?}" ;;
   roles)       roles ;;
+  cuenta|cuentas) shift; cmd_cuenta "$@" ;;
   mode)        shift; [ -n "${1:-}" ] || die "bk mode <rol>"
                role_mode "$1" "$(git rev-parse --show-toplevel 2>/dev/null || true)"; echo ;;
   tokens)      exec python3 "$WS/lib/usage.py" ;;
