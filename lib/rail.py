@@ -120,6 +120,20 @@ def roles_profile(top):
 
 
 _profile = {"t": 0, "v": "—"}
+_account = {"t": 0, "v": ""}
+
+
+def session_account():
+    """La cuenta de esta sesión (bk account use): "" si es la default en los dos proveedores."""
+    if time.time() - _account["t"] > 5:
+        pane = os.environ.get("TMUX_PANE", "")
+        got = []
+        for prov in ("claude", "codex"):
+            v = sh("tmux", "show-options", "-qv", *(["-t", pane] if pane else []), f"@bk_account_{prov}").strip()
+            if v and v != "default":
+                got.append(v if prov == "claude" else f"codex {v}")
+        _account["v"], _account["t"] = " · ".join(got), time.time()
+    return _account["v"]
 
 
 def wait_kind(s):
@@ -138,7 +152,11 @@ def card_status(W, cwd, live):
     n = inner(W)
     rows = [f"{MUTED}Project{RST}", f" {TEXT}{path}{RST}",
             f" {MUTED}Branch{RST}  {TEXT}{BOLD}{br or '—'}{RST}" + (f" {AMBER}±{dirty}{RST}" if dirty else ""),
-            f" {MUTED}Profile{RST} {TEXT}{_profile['v']}{RST}", ""]
+            f" {MUTED}Profile{RST} {TEXT}{_profile['v']}{RST}"]
+    acct = session_account()
+    if acct:
+        rows.append(f" {MUTED}Cuenta{RST}  {ROSE}{acct}{RST}")
+    rows.append("")
     if PROJECT:
         name = os.path.basename(PROJECT)
         pt = sum(v["tokens"] for k, v in u.get("by_project", {}).items() if k == name or k.startswith(name + "#"))

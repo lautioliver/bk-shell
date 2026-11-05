@@ -83,6 +83,11 @@ quedó sin commitear, en una sola sesión de tmux.
 - **Checkpoints**: `bk checkpoints` junta lo que solo vos podés hacer, con el comando para hacerlo: planes por aprobar,
   reviewers propuestos, PRs que te pidieron revisar, PRs tuyos listos para mergear y lecciones propuestas. Es la misma
   lista que *Te esperan* en `bk monitor` (`--json` para la barra u otros scripts). No está en el riel, para no llenarlo.
+- **Cuentas por sesión**: `bk account new claude trabajo` crea otra cuenta de Claude Code (o `codex`) y hace su
+  login; `bk account use trabajo` la pone en esta sesión: los agentes y chats que lances desde acá corren con ella,
+  y otra sesión puede usar otra al mismo tiempo. Las conversaciones son las mismas (`/resume` y `alt+s` ven todas);
+  `--relaunch` también cambia el chat principal, retomando su conversación. `bk run … --account X` solo para un
+  lanzamiento; `bk account use default` vuelve a la de siempre. El riel muestra la cuenta en Status.
 - **Stats**: mapa de actividad, modelo favorito, rachas y costo equivalente en API de todo tu historial de Claude Code.
 
 ## Requisitos
@@ -145,13 +150,17 @@ bk help            # todo lo demás
 - Las tareas (`lib/tasks.py`) viven en `${XDG_STATE_HOME:-~/.local/state}/bk/tasks/<proyecto>/<id>/`: `task.json`
   (el estado) y `events.jsonl` (un hecho por línea, con `seq`). El agente recibe esa carpeta en `BK_TASK_DIR`.
   Nada se borra solo (`BK_TASKS_DIR` cambia la carpeta).
+- Cada cuenta (`lib/accounts.py`) es una carpeta de config en `${XDG_STATE_HOME:-~/.local/state}/bk/accounts/<nombre>`
+  que se pasa como `CLAUDE_CONFIG_DIR` (o `CODEX_HOME`). Lo compartido (`projects/` con las conversaciones,
+  `settings.json`, `CLAUDE.md`, skills, plugins, hooks, historial) es un symlink a `~/.claude` (o `~/.codex`); lo
+  propio son las credenciales (Claude Code las guarda en el llavero con un sufijo por carpeta) y `.claude.json`.
 - El estilo (tarjetas *float* o *neon*, densidad, header arriba o abajo) se guarda en `~/.config/bk/ui.json`.
 - Los costos son el **equivalente en API** de los tokens (con una suscripción no se cobra así).
 
 ## Tests
 
 ```bash
-bash tests/run.sh        # hook de estado, bk, tareas, instalador y vistas (también corre en CI: macOS y Linux)
+bash tests/run.sh        # hook de estado, bk, tareas, cuentas, instalador y vistas (también corre en CI: macOS y Linux)
 ```
 
 Inspirado en [Gentle Shell](https://github.com/Gentleman-Programming/gentle-shell) de Gentleman Programming.
