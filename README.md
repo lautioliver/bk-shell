@@ -284,14 +284,15 @@ echo "hola ${1:-vos}: $n agentes"
   `--dry-run` (`DRY=0` si no: el comando decide qué no hacer). Su código de salida es el de `bk`.
 - `bk help` termina con **Comandos propios**: los que encuentra, uno por nombre (sin los que tapa un comando de bk)
   y, como descripción, la primera línea de sus primeras 5 que empiece con `# bk <nombre>` (en el ejemplo:
-  `[nombre]: saluda y cuenta cuántos agentes hay`). Sin esa línea sale solo el nombre.
+  `[nombre]: saluda y cuenta cuántos agentes hay`), sin caracteres de control. Sin esa línea sale solo el nombre.
 
 Enganches: bk corre solo algunos comandos propios con nombre fijo, si existen.
 
 - **`on-empty`**: `bk` o `bk ws` sin ningún workspace abierto (ninguna sesión de tmux que empiece con `bk-`) lo corre
   antes de abrir el workspace; por ejemplo, para reabrir lo que tenías antes de reiniciar. Su código de salida no
   importa: el workspace se abre igual. No corre si `BK_RESTORING` tiene algo (lo pone tu restore mientras reabre,
-  para no entrar en un círculo) ni con `--dry-run` (ahí bk solo dice que lo correría).
+  para no entrar en un círculo) ni con `--dry-run` (ahí bk solo dice que lo correría). bk lo corre con
+  `BK_RESTORING=1`: si llama a `bk` o `bk ws` para reabrir, esas llamadas no lo vuelven a correr.
 - **`launch-env`**: antes de crear la ventana de un agente, bk lo corre con `BK_LAUNCH_CWD` (la carpeta del agente) y
   `BK_LAUNCH_ROLE` (su rol) y pasa a la ventana, como variables de entorno, cada línea de su salida con la forma
   `NOMBRE=valor` (el nombre: letras, números y `_`, sin empezar con número). Las demás líneas y lo que diga por
@@ -311,7 +312,8 @@ Enganches: bk corre solo algunos comandos propios con nombre fijo, si existen.
   `${BK_CONFIG_DIR:-~/.config/bk}/palette.d/*.tsv`, los archivos en orden alfabético. Una por línea, separada con
   tabs: `grupo`, `etiqueta`, `comando` (lo que va después de `bk`), el argumento que pide (vacío si no pide nada) y el
   tipo: `run` o `show` (deja la salida en pantalla hasta una tecla) o `view` (reemplaza a la paleta). Las líneas
-  vacías, las que empiezan con `#` y las que no tienen esos 5 campos (o un tipo que no es uno de esos) no cuentan.
+  vacías, las que empiezan con `#`, las que no tienen esos 5 campos (o un tipo que no es uno de esos) y las que llevan
+  un carácter de control (como NUL o ESC) no cuentan.
 
   ```
   # grupo	etiqueta	comando	argumento	tipo

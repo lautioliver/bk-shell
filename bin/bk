@@ -1527,7 +1527,8 @@ launch_env() {
 
 # Enganche on-empty: "bk" o "bk ws" sin ningún workspace abierto (ninguna sesión bk-* en tmux) corre antes el
 # comando propio "on-empty" (por ejemplo, para reabrir lo que había). No cuando lo llama un restore
-# (BK_RESTORING), ni con --dry-run (solo lo dice). Su código de salida no importa.
+# (BK_RESTORING), ni con --dry-run (solo lo dice). Su código de salida no importa. Corre con BK_RESTORING=1: si
+# llama a "bk" o "bk ws" para reabrir, esa llamada no vuelve a correr on-empty (sin eso, no terminaría nunca).
 on_empty() {
   local p
   [ -z "${BK_RESTORING:-}" ] || return 0
@@ -1536,7 +1537,7 @@ on_empty() {
   local ses; ses=$(tmux list-sessions -F '#{session_name}' 2>/dev/null || true)
   case $'\n'"$ses" in *$'\n'bk-*) return 0 ;; esac
   if [ "$DRY" -eq 1 ]; then info "(dry-run: sin workspaces abiertos, correría $p)"; return 0; fi
-  (plugin_env; "$p") || true
+  (plugin_env; BK_RESTORING=1 "$p") || true
 }
 
 plugins_help() {
@@ -1551,6 +1552,14 @@ builtin_cmds() {
        on && match($0, /^  [-a-z_|"]+\)/) { s = substr($0, 3, RLENGTH - 3); gsub(/"/, "", s)
                                          n = split(s, a, "|"); for (i = 1; i <= n; i++) if (a[i] != "") print a[i] }' \
     "$WS/bin/bk"
+}
+
+# Lo que entra, sin caracteres de control salvo el salto de línea y el tab (UTF-8; un byte que no lo es queda
+# como U+FFFD, que se ve y la terminal no interpreta).
+printable() {
+  python3 -c 'import sys
+s = sys.stdin.buffer.read().decode("utf-8", "replace")
+sys.stdout.buffer.write("".join(c for c in s if c in "\t\n" or c.isprintable()).encode())'
 }
 
 # "Comandos propios" de bk help: los que encuentra find_plugin (bk-* del PATH y $BK_PLUGINS/*), uno por nombre,
@@ -1569,10 +1578,11 @@ list_plugins() {
   printf '%s\n' "${names[@]}" | LC_ALL=C sort -u | while IFS= read -r n; do
     case $'\n'"$builtins"$'\n' in *$'\n'"$n"$'\n'*) continue ;; esac
     p=$(find_plugin "$n") || continue
-    # Sin secuencias de control: la descripción sale del archivo de otro
-    desc=$(head -n 5 "$p" 2>/dev/null | LC_ALL=C tr -d '\000-\010\013-\037\177' \
+    # Sin caracteres de control (C0, DEL ni C1 como U+009B): la descripción sale del archivo de otro
+    # (hasta 64 KiB: un binario sin saltos de línea no se lee entero; si un paso se corta, queda lo que haya)
+    desc=$(head -c 65536 "$p" 2>/dev/null | head -n 5 | printable 2>/dev/null \
            | awk -v n="$n" 'index($0, "# bk " n) == 1 { r = substr($0, length("# bk " n) + 1)
-                               if (r == "" || r ~ /^[ :]/) { sub(/^[ :]+/, "", r); print r; exit } }')
+                               if (r == "" || r ~ /^[ :]/) { sub(/^[ :]+/, "", r); print r; exit } }') || true
     printf '  %-16s %s\n' "$n" "$desc"
   done
 }

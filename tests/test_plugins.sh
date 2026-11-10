@@ -2,7 +2,7 @@
 # Comandos propios como en git: "bk foo" que bk no conoce corre bk-foo del PATH o $BK_PLUGINS/foo.
 # Y la carpeta de estado: bin/bk y cada lib que la lee usan BK_STATE_DIR, con ~/.cache/bk/agents por defecto.
 set -u
-HERE="$(cd "$(dirname "$0")" && pwd)"; ROOT="$(dirname "$HERE")"
+HERE="$(cd "$(dirname "$0")" && pwd -P)"; ROOT="$(dirname "$HERE")"
 # shellcheck source=tests/lib.sh
 . "$HERE/lib.sh"
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT

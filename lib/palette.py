@@ -60,7 +60,8 @@ def extra_entries(conf=None):
     """Las entradas propias: ${BK_CONFIG_DIR:-~/.config/bk}/palette.d/*.tsv, en orden alfabético.
 
     Una por línea: grupo<TAB>etiqueta<TAB>comando<TAB>argumento-o-vacío<TAB>tipo (run | show | view). Las
-    líneas vacías, las que empiezan con # y las mal formadas no cuentan; un archivo que no se puede leer, tampoco.
+    líneas vacías, las que empiezan con # y las mal formadas no cuentan (también las que llevan un carácter de
+    control, como NUL o ESC, que curses no dibuja o la terminal interpreta); un archivo que no se puede leer, tampoco.
     """
     conf = conf or os.environ.get("BK_CONFIG_DIR") or os.path.expanduser("~/.config/bk")
     d = os.path.join(conf, "palette.d")
@@ -83,6 +84,8 @@ def extra_entries(conf=None):
                 continue
             group, label, cmd, arg, kind = (x.strip() for x in parts)
             if not (group and label and cmd.split()) or kind not in KINDS:
+                continue
+            if not all(f.isprintable() for f in (group, label, cmd, arg)):
                 continue
             out.append((group, label, cmd, arg or None, kind))
     return out

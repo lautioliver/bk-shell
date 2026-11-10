@@ -59,6 +59,9 @@ EOF
 printf 'Mías\tPrimera\tuno\t\trun\r\n' >"$TMP/config/palette.d/a.tsv"
 printf 'Mías\tNo es tsv\tocho\t\trun\n' >"$TMP/config/palette.d/c.txt"
 printf '\xff\xfe roto\n' >"$TMP/config/palette.d/d.tsv"
+# Con caracteres de control (NUL, ESC, un C1 en UTF-8, en cualquier campo): no cuentan
+printf 'Mías\tCon\000nulzz\tdos\t\trun\nMías\tCon esc zz\tdos \033[2J\t\trun\nMías\tCon c1 zz\tdos\ta\302\233b\trun\n' \
+  >"$TMP/config/palette.d/e.tsv"
 out=$(BK_CONFIG_DIR="$TMP/config" HOME="$TMP/home" python3 - "$ROOT" <<'PY'
 import sys, curses, importlib.util
 root = sys.argv[1]
@@ -73,7 +76,9 @@ print("vacia\t" + repr(m.extra_entries(f"{root}/no-existe")))
 class Scr:
     def __init__(s, keys): s.keys = list(keys); s.text = []
     def getmaxyx(s): return (60, 120)
-    def addnstr(s, y, x, t, n, *a): s.text.append(t[:n])
+    def addnstr(s, y, x, t, n, *a):
+        if "\0" in t: raise ValueError("embedded null character")   # como el curses de verdad
+        s.text.append(t[:n])
     def erase(s): s.text = []
     def move(s, *a): pass
     def refresh(s): pass
@@ -85,6 +90,8 @@ m.G.curses_attrs = lambda: {k: 0 for k in ("rose", "petal", "muted", "iris")}
 print("ui\t" + repr(m.ui(Scr(list("con argumento") + ["\n"] + list("algo") + ["\n"]))))
 s2 = Scr(["\x1b"]); m.ui(s2)
 print("lista\t" + str(any("bk dos" in t for t in s2.text)))
+s3 = Scr(list("zz") + ["\x1b", "\x1b"]); s3.erase = lambda: None; m.ui(s3)   # junta lo de todos los cuadros
+print("control\t" + str(not any("zz" in t and not t.startswith("›") for t in s3.text) and any("Primera" in t for t in s3.text)))
 PY
 ) || { check 1 "no pude leer palette.d"; finish; exit 1; }
 get() { printf '%s\n' "$out" | awk -F'\t' -v k="$1" '$1 == k {print $2}'; }
@@ -94,5 +101,6 @@ check_eq "$(get todas)" "True" "palette.d: van después de las entradas fijas"
 check_eq "$(get vacia)" "[]" "palette.d: sin la carpeta, ninguna"
 check_eq "$(get ui)" "(('Mías', 'Con argumento', 'tres --x', 'qué', 'view'), 'algo')" "la paleta busca las propias y pide su argumento"
 check_eq "$(get lista)" "True" "la paleta lista las propias con su comando"
+check_eq "$(get control)" "True" "palette.d: las líneas con caracteres de control (NUL, ESC, C1) no cuentan y la paleta no se cae"
 
 finish

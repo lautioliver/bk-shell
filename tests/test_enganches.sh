@@ -7,7 +7,7 @@
 # (palette.d está en tests/test_palette.sh.) Todo con un tmux, un bk y demás herramientas falsos primero en un
 # PATH mínimo: ningún comando propio de tu PATH real ni el tmux real.
 set -u
-HERE="$(cd "$(dirname "$0")" && pwd)"; ROOT="$(dirname "$HERE")"
+HERE="$(cd "$(dirname "$0")" && pwd -P)"; ROOT="$(dirname "$HERE")"
 # shellcheck source=tests/lib.sh
 . "$HERE/lib.sh"
 TMP=$(cd "$(mktemp -d)" && pwd -P); trap 'rm -rf "$TMP"' EXIT
@@ -63,6 +63,15 @@ check_eq "$(oe)" "ws=$ROOT ses=agents dry=0 state=$TMP/agents" "bk ws con sesion
 check_eq "$(oe)" "" "con un workspace abierto (bk-proj) no corre on-empty"
 (cd "$TMP/proj" && BK_RESTORING=1 bk >/dev/null 2>&1)
 check_eq "$(oe)" "" "con BK_RESTORING no corre on-empty"
+# on-empty corre con BK_RESTORING=1: si llama a bk ws para reabrir, esa llamada no lo vuelve a correr
+mv "$TMP/plugins/on-empty" "$TMP/on-empty.bak"
+mk "$TMP/plugins/on-empty" '#!/bin/sh
+n=$(cat "'"$TMP"'/oe" 2>/dev/null | wc -l); echo "restoring=${BK_RESTORING-nada}" >> "'"$TMP"'/oe"
+[ "$n" -ge 4 ] || "$BK_WS/bin/bk" ws >/dev/null 2>&1'
+: >"$LOG"; (cd "$TMP/proj" && bk >/dev/null 2>&1)
+check_eq "$(oe | tr '\n' ' ')|$(grep -cx attach "$LOG")" "restoring=1 |2" \
+  "on-empty corre con BK_RESTORING=1: un bk ws adentro abre sin volver a correrlo"
+mv "$TMP/on-empty.bak" "$TMP/plugins/on-empty"
 : >"$LOG"; (cd "$TMP/proj" && OE_RC=5 bk >/dev/null 2>&1); rc=$?
 check_eq "$rc|$(oe | wc -l | tr -d ' ')|$(grep -cx attach "$LOG")" "0|1|1" "si on-empty falla, bk abre el workspace igual"
 out=$(cd "$TMP/proj" && bk --dry-run 2>&1)
@@ -101,6 +110,13 @@ check_eq "$(envs | grep '^BARRILETE_ROLE=' | tail -1)" "BARRILETE_ROLE=reviewer"
 case "$out" in *ruido*) r=1 ;; *) r=0 ;; esac; check $r "lo que launch-env dice por stderr no se muestra"
 out=$(LE_RC=3 lanza)
 check_eq "$(envs | grep -c '^BK_X=')|$(grep -cxE "new-(session|window)" "$LOG")" "0|1" "si launch-env falla: sin sus variables, y el agente se lanza igual"
+# launch_env sola, sin set -e (como si la llamara otro lado): si launch-env falla, ninguna variable aunque
+# haya impreso alguna. Con el set -e de bin/bk daría lo mismo sin el «|| return 0»; así lo cuida igual.
+sed -n '/^launch_env() {/,/^}/p' "$ROOT/bin/bk" >"$TMP/launch_env.sh"
+le_sola() { bash -c 'find_plugin() { printf %s "$PLUG"; }; plugin_env() { :; }; . "$1"; launch_env /x reviewer' \
+              _ "$TMP/launch_env.sh"; }
+check_eq "$(PLUG="$TMP/plugins/launch-env" le_sola | grep -c '^BK_X=')|$(PLUG="$TMP/plugins/launch-env" LE_RC=3 le_sola)" "1|" \
+  "launch_env sin set -e (como si la llamara otro lado): si launch-env falla, ninguna variable aunque haya impreso"
 out=$(lanza --dry-run)
 check_eq "$([ -e "$TMP/le" ]; echo $?)|$(grep -c . "$LOG")" "1|0" "con --dry-run no corre launch-env (ni toca tmux)"
 rm "$TMP/plugins/launch-env"
@@ -142,12 +158,15 @@ mk "$TMP/pbin/bk-ws" '#!/bin/sh
 mk "$TMP/plugins/help" '#!/bin/sh
 # bk help: tapado'
 printf '#!/bin/sh\n# bk raro: con \033[31mcolor\033[0m\n' >"$TMP/plugins/raro"; chmod +x "$TMP/plugins/raro"
+# C1 en UTF-8 (U+009B CSI, U+009D OSC), un 0x9B suelto, BEL y un RLO (U+202E): se van; los acentos quedan
+printf '#!/bin/sh\n# bk c1: a\302\2332J\302\2350;título\007b\342\200\256c\n' >"$TMP/plugins/c1"; chmod +x "$TMP/plugins/c1"
+printf '#!/bin/sh\n# bk crudo: a\2332Jb\n' >"$TMP/plugins/crudo"; chmod +x "$TMP/plugins/crudo"
 printf '#!/bin/sh\n# bk quieto: no es ejecutable\n' >"$TMP/plugins/quieto"
 mk "$TMP/pbin/bk-con.punto" '#!/bin/sh'
 mkdir -p "$TMP/plugins/carpeta"
 help=$(bk help); sec=$(printf '%s\n' "$help" | sed -n '/^Comandos propios (/,$p')
 check_eq "$(printf '%s\n' "$sec" | sed -n 1p | cut -c1-17)" "Comandos propios " "bk help termina con «Comandos propios»"
-check_eq "$(printf '%s\n' "$sec" | sed 1d | awk '{print $1}' | tr '\n' ' ')" "gh-env hola otro raro sin-desc tarde " \
+check_eq "$(printf '%s\n' "$sec" | sed 1d | awk '{print $1}' | tr '\n' ' ')" "c1 crudo gh-env hola otro raro sin-desc tarde " \
   "lista los del PATH y de BK_PLUGINS, uno por nombre, sin los que tapa bk ni los que no corren"
 row() { printf '%s\n' "$sec" | awk -v n="$1" '$1 == n' | sed -E 's/^  [^ ]+ +//'; }
 check_eq "$(row hola)" "[nombre]: saluda" "la descripción sale de «# bk <nombre>», del que corre (el del PATH)"
@@ -155,6 +174,11 @@ check_eq "$(row otro)" "la buena" "«# bk otrox» no es la de otro"
 check_eq "$(row tarde)|$(row sin-desc)" "|" "sin «# bk <nombre>» en las primeras 5 líneas, sin descripción"
 check_eq "$(row raro)" "con [31mcolor[0m" "sin secuencias de control: el ESC se va"
 check_eq "$(row raro | LC_ALL=C tr -d '[:print:]\n' | wc -c | tr -d ' ')" "0" "la descripción no lleva caracteres de control"
+check_eq "$(row c1)" "a2J0;títulobc" "sin C1 (CSI, OSC), BEL ni RLO; los acentos quedan"
+check_eq "$(row crudo)" "a�2Jb" "un byte suelto que no es UTF-8 queda como �"
+check_eq "$(printf '%s\n' "$sec" | sed 1d | python3 -c 'import sys
+s = sys.stdin.buffer.read().decode("utf-8", "replace")
+print(sum(1 for c in s if c != "\n" and not c.isprintable()))')" "0" "ninguna descripción lleva caracteres de control (C0, DEL ni C1)"
 rm -rf "$TMP/plugins"/* "$TMP/pbin"/*
 check_eq "$(bk help | sed -n '/^Comandos propios (/,$p' | sed 1d)" "  (ninguno)" "sin comandos propios: (ninguno)"
 check_eq "$(bk nada 2>&1 >/dev/null | grep -c '^Comandos propios (')" 1 "un comando que no existe muestra lo mismo por stderr"
