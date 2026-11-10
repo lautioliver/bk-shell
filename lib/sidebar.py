@@ -12,6 +12,7 @@ import curses, glob, json, os, re, shlex, subprocess, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import agents as AG  # noqa: E402  (nombre de los chats: bk name, /rename o el título de Claude)
+import gentle as G  # noqa: E402
 
 TIP_MS = 2500           # cuánto queda el nombre en la barra de tmux al pasar el mouse
 SUB_TTL = 600           # un subagente sin escribir su transcript en 10 min ya no cuenta como vivo
@@ -235,15 +236,8 @@ def ui(scr):
     me = os.environ.get("TMUX_PANE", "")
     client = sh("tmux", "display-message", "-p", "-t", me, "#{client_name}").strip() if me else ""
     hover_y, hover_t, tips = -1, 0.0, {}
-    try:   # de día, tonos oscuros y apagados (los de noche son pastel y sobre fondo claro gritan)
-        from gentle import is_day
-        day = is_day()
-    except Exception:
-        day = False
-    colors = {1: 137, 2: 131, 3: 243, 4: 132, 5: 60} if day else {1: 222, 2: 210, 3: 244, 4: 218, 5: 147}
-    for k, v in colors.items():
-        curses.init_pair(k, v, -1)
-    WORK, WAIT, MUTED, ROSE, IRIS = (curses.color_pair(i) for i in range(1, 6))
+    A = G.curses_attrs()   # los mismos colores que el riel, de día y de noche
+    WORK, WAIT, MUTED, ROSE, IRIS = (A[k] for k in ("amber", "red", "muted", "rose", "iris"))
 
     def tooltip(text):
         """El nombre de la fila, como tooltip en la barra de tmux (la tira no cambia de ancho)."""

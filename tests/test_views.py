@@ -1,5 +1,5 @@
 """Tests de las vistas en Python: anchos con color, estados de la tira, el humor de Barrilete y stats."""
-import json, os, re, sys, tempfile, time, unittest
+import json, os, re, sys, tempfile, time, types, unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib"))
 os.environ.setdefault("BK_STATE_DIR", tempfile.mkdtemp())
@@ -32,6 +32,47 @@ class Gentle(unittest.TestCase):
             G.ui = lambda style=style: {**G.DEFAULTS, "cards": style}
             lines = [l for l in G.card("Título", ["fila"], 30) if l]
             self.assertTrue(all(G.vlen(l) <= 30 for l in lines), style)
+
+
+class PaletaUnica(unittest.TestCase):
+    """Todas las vistas toman los colores de gentle.P (día/noche); ninguna trae su tabla de números 256."""
+
+    def test_to256_extremos_y_grises(self):
+        self.assertEqual(G.to256("FFFFFF"), 231)
+        self.assertEqual(G.to256("#000000"), 16)
+        self.assertEqual(G.to256("808080"), 244)    # gris puro: la rampa de grises, no el cubo
+        self.assertEqual(G.to256("FF0000"), 196)    # color puro: el cubo
+
+    def test_ramp_va_de_un_tono_al_otro(self):
+        r = G.ramp(5)
+        self.assertEqual((len(r), r[0], r[-1]), (5, G.P["tint"], G.P["rose"]))
+        self.assertEqual(G.ramp(1), [G.P["tint"]])   # un solo paso no divide por cero
+
+    def test_curses_attrs_inicia_un_par_por_color_de_la_paleta(self):
+        pares = {}
+        falso = types.SimpleNamespace(init_pair=lambda n, f, b: pares.__setitem__(n, (f, b)),
+                                      color_pair=lambda n: n << 8)
+        sys.modules["curses"], real = falso, sys.modules.get("curses")
+        try:
+            a = G.curses_attrs(base=30, shades=3)
+        finally:
+            sys.modules["curses"] = real
+        self.assertEqual(set(a), set(G.CURSES_NAMES) | {"shade0", "shade1", "shade2"})
+        for name in G.CURSES_NAMES:
+            self.assertEqual(pares[a[name] >> 8], (G.to256(G.P[name]), -1), name)
+        self.assertEqual(len(set(a.values())), len(a))       # ningún par pisa a otro
+        self.assertEqual(pares[a["shade2"] >> 8][0], G.to256(G.P["rose"]))
+
+    def test_ninguna_vista_define_colores_propios(self):
+        lib = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib")
+        mal = []
+        for f in sorted(os.listdir(lib)):
+            if not f.endswith(".py") or f == "gentle.py":
+                continue
+            for n, l in enumerate(open(os.path.join(lib, f), encoding="utf-8"), 1):
+                if re.search(r"init_pair\(|\\033\[38;5;|\\x1b\[38;5;", l):
+                    mal.append(f"{f}:{n}: {l.strip()}")
+        self.assertEqual(mal, [], "colores fuera de gentle.py: usá G.curses_attrs() o G.ROSE…")
 
 
 class Sidebar(unittest.TestCase):

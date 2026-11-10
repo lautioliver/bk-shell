@@ -12,7 +12,10 @@
 
 Teclas: ↑↓/jk elegir · enter · / ruta · esc cerrar.  Usa BK_CLIENT y BK_FROM (los pone el atajo de tmux).
 """
-import curses, glob, json, os, re, subprocess
+import curses, glob, json, os, re, subprocess, sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import gentle as G  # noqa: E402  (paleta del tema, una sola para todas las vistas)
 
 BK = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "bin", "bk")
 PROJECTS = os.path.expanduser("~/.claude/projects")
@@ -78,9 +81,8 @@ def recent_projects(limit=25):
 def ui(scr):
     curses.curs_set(0)
     curses.use_default_colors()
-    for k, v in {1: 218, 2: 182, 3: 244, 4: 147}.items():
-        curses.init_pair(k, v, -1)
-    ROSE, PETAL, MUTED, IRIS = (curses.color_pair(i) for i in range(1, 5))
+    A = G.curses_attrs()
+    ROSE, PETAL, MUTED, IRIS = A["rose"], A["petal"], A["muted"], A["iris"]
     here = os.environ.get("BK_FROM", "")
     opened = open_sessions()
     here_proj = next((p for p, s in opened.items() if s == here), None)

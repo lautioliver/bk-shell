@@ -22,10 +22,10 @@ import tty
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 from sidebar import PROJECTS, clean, live_meta  # noqa: E402
+import gentle as G  # noqa: E402
 
 R, DIM, BOLD = "\033[0m", "\033[2m", "\033[1m"
-ROSE, IRIS, AMBER, GREEN, RED = ("\033[38;5;218m", "\033[38;5;147m", "\033[38;5;222m",
-                                 "\033[38;5;150m", "\033[38;5;210m")
+ROSE, IRIS, AMBER, GREEN, RED = G.ROSE, G.IRIS, G.AMBER, G.GREEN, G.RED
 
 
 def project_label(dirname):

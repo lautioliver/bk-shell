@@ -25,6 +25,7 @@ import time
 import unicodedata
 
 import tasks as TK   # tareas de los agentes (ADR-005 del kit): estado final, propuestas y cola de bk say
+import gentle as G   # paleta del tema, la misma que el riel
 
 SESSION = os.environ.get("BK_SESSION", "agents")
 STATE_DIR = os.environ.get("BK_STATE_DIR", os.path.expanduser("~/.cache/sketchybar/agents"))
@@ -33,7 +34,7 @@ TITLES = os.path.join(os.environ.get("BK_CACHE_DIR", os.path.expanduser("~/.cach
 WIN_RE = re.compile(r"^(?:[\w.-]+-)?(i|pr|f)(\d+)$")   # i218, pr241, f240, abra-i12
 
 R, DIM, BOLD = "\033[0m", "\033[2m", "\033[1m"
-ROSE, AMBER, GREEN, IRIS = "\033[38;5;218m", "\033[38;5;222m", "\033[38;5;150m", "\033[38;5;147m"
+ROSE, AMBER, GREEN, IRIS = G.ROSE, G.AMBER, G.GREEN, G.IRIS
 
 
 def sh(*args, timeout=5):

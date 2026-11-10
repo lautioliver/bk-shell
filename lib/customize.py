@@ -56,9 +56,8 @@ def apply(key, value):
 def ui(scr):
     curses.curs_set(0)
     curses.use_default_colors()
-    for k, v in {1: 218, 2: 182, 3: 244, 4: 252}.items():
-        curses.init_pair(k, v, -1)
-    ROSE, PETAL, MUTED, TEXT = (curses.color_pair(i) for i in range(1, 5))
+    A = G.curses_attrs()
+    ROSE, PETAL, MUTED, TEXT = A["rose"], A["petal"], A["muted"], A["text"]
     cat, opt, pane, msg = 0, 0, 0, ""
     while True:
         conf = G.ui()

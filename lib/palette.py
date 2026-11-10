@@ -7,6 +7,9 @@ Los que muestran texto (tokens, roles…) dejan la salida en pantalla hasta una 
 """
 import curses, os, subprocess, sys
 
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import gentle as G  # noqa: E402  (paleta del tema, una sola para todas las vistas)
+
 BK = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "bin", "bk")
 
 # (grupo, etiqueta, comando, argumento pedido | None, tipo)  tipo: run | show | view
@@ -51,9 +54,8 @@ ENTRIES = [
 def ui(scr):
     curses.curs_set(1)
     curses.use_default_colors()
-    for k, v in {1: 211, 2: 182, 3: 244, 4: 147}.items():
-        curses.init_pair(k, v, -1)
-    ROSE, PETAL, MUTED, IRIS = (curses.color_pair(i) for i in range(1, 5))
+    A = G.curses_attrs()
+    ROSE, PETAL, MUTED, IRIS = A["rose"], A["petal"], A["muted"], A["iris"]
     q, sel, ask, arg, chosen = "", 0, False, "", None
     while True:
         H, W = scr.getmaxyx()
