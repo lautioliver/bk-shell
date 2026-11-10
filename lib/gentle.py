@@ -108,6 +108,39 @@ def curses_attrs(base=20, shades=0):
     return out
 
 
+# Estados de un agente o chat: una sola tabla para la tira, el riel, el monitor y los overlays.
+# glifo, texto y nombre de color de la paleta. Cada estado tiene su propio glifo: no se distinguen solo por color.
+STATES = {
+    "working":    ("●", "trabajando", "iris"),     # la tira y el riel lo animan con un spinner
+    "background": ("◐", "en 2º plano", "iris"),
+    "waiting":    ("!", "te espera", "red"),
+    "permission": ("!", "pide permiso", "red"),
+    "question":   ("?", "te pregunta", "amber"),
+    "stale":      ("⚠", "¿trabado?", "amber"),     # "working" sin eventos del hook hace rato
+    "trust":      ("●", "confiá la carpeta", "red"),
+    "done":       ("✓", "listo", "green"),
+    "idle":       ("○", "libre", "muted"),
+    "ended":      ("·", "terminó", "muted"),
+    "none":       ("·", "sin estado", "muted"),
+    "error":      ("✗", "error", "red"),
+}
+STATE_COLOR = {"iris": "IRIS", "amber": "AMBER", "red": "RED", "green": "GREEN", "muted": "MUTED"}
+
+
+def state_ui(state):
+    """(glifo, texto, nombre de color) del estado; uno desconocido cae en "none" con su nombre como texto."""
+    if state in STATES:
+        return STATES[state]
+    g, _, c = STATES["none"]
+    return g, state or STATES["none"][1], c
+
+
+def state_ansi(state):
+    """Como state_ui, pero con el color como secuencia ANSI del tema."""
+    g, txt, c = state_ui(state)
+    return g, txt, globals()[STATE_COLOR[c]]
+
+
 def cw(ch):
     if unicodedata.combining(ch):
         return 0

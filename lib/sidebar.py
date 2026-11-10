@@ -226,6 +226,19 @@ def go(target):
     subprocess.run(["tmux", "switch-client"] + c + ["-t", target], capture_output=True)
 
 
+SPIN, HALF = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏", "◐◓◑◒"
+
+
+def dot_for(state, tick, attrs):
+    """(glifo, atributo curses) de la fila de la tira: los de gentle.STATES; trabajando y 2º plano giran."""
+    g, _, color = G.state_ui(state)
+    if state == "working":
+        g = SPIN[tick % len(SPIN)]
+    elif state == "background":
+        g = HALF[(tick // 2) % len(HALF)]
+    return g, attrs[color]
+
+
 def ui(scr):
     curses.curs_set(0)
     curses.use_default_colors()
@@ -237,7 +250,7 @@ def ui(scr):
     client = sh("tmux", "display-message", "-p", "-t", me, "#{client_name}").strip() if me else ""
     hover_y, hover_t, tips = -1, 0.0, {}
     A = G.curses_attrs()   # los mismos colores que el riel, de día y de noche
-    WORK, WAIT, MUTED, ROSE, IRIS = (A[k] for k in ("amber", "red", "muted", "rose", "iris"))
+    MUTED, ROSE, IRIS = (A[k] for k in ("muted", "rose", "iris"))
 
     def tooltip(text):
         """El nombre de la fila, como tooltip en la barra de tmux (la tira no cambia de ancho)."""
@@ -269,8 +282,8 @@ def ui(scr):
             hl = curses.A_REVERSE if y == hover_y else 0
             if kind == "sub":   # subagente: rama debajo de su chat, sin número; clic = su sesión
                 scr.addnstr(y, 1, "└", 1, MUTED | hl)
-                dot = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"[tick % 10] if state == "working" else "◐◓◑◒"[(tick // 2) % 4]
-                scr.addnstr(y, 3, dot, 1, WORK)
+                dot, col = dot_for(state, tick, A)
+                scr.addnstr(y, 3, dot, 1, col)
                 tips[y] = f"↳ subagente · {info[1]}"
                 rowmap[y] = target
                 y += 1
@@ -279,22 +292,7 @@ def ui(scr):
                 n_ws += 1; num = n_ws
             else:
                 n_ag += 1; num = n_ag
-            if state == "working":
-                dot, col = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"[tick % 10], WORK
-            elif state == "background":
-                dot, col = "◐◓◑◒"[(tick // 2) % 4], WORK
-            elif state == "stale":
-                dot, col = "~", WAIT
-            elif state == "question":
-                dot, col = "?", WAIT
-            elif state == "permission":
-                dot, col = "!", WAIT
-            elif state == "waiting":
-                dot, col = "●", WAIT
-            elif state == "none":
-                dot, col = "·", MUTED
-            else:
-                dot, col = "○", MUTED
+            dot, col = dot_for(state, tick, A)
             here = kind == "ws" and label == cur
             numattr = (ROSE | curses.A_BOLD | curses.A_REVERSE) if here else (IRIS if kind == "ag" else 0)
             scr.addnstr(y, 1, f"{num:>1}", 2, numattr | hl)
