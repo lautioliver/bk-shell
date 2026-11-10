@@ -189,6 +189,42 @@ class EstadosUnicos(unittest.TestCase):
         self.assertTrue(AG.line({**ag, "state": "working", "kind": "chat"}, color=False).startswith("◇ "))
 
 
+class TiraIds(unittest.TestCase):
+    """El número fijo del workspace en bk ls y quién lanzó a cada agente en el tooltip de la tira."""
+
+    def test_bk_ls_antepone_el_numero_fijo_del_chat(self):
+        a = {"asks": False, "why": "", "state": "idle", "mins": 1, "kind": "chat", "short": "demo", "win": "",
+             "title": "t", "num": "", "ref": "", "project": "p", "queued": 0, "question": "", "note": ""}
+        self.assertIn(" 3 demo ", AG.line({**a, "id": "3"}, color=False))
+        self.assertIn(" demo ", AG.line({**a, "id": ""}, color=False))      # sin número (de antes): solo el nombre
+        largo = AG.line({**a, "short": "mi-proyecto-largo-2", "id": "12"}, color=False)
+        self.assertIn(" 12 …to-largo-2 ", largo)                                # entra en 14 y el final distingue
+        self.assertNotIn("12 ", AG.line({**a, "kind": "agent", "win": "i7", "id": "12"}, color=False))
+
+    def test_tooltip_dice_quien_lo_lanzo(self):
+        self.assertEqual(sidebar.row_tip("ag", "i7", ("demo · i7", ""), None, "3"),
+                         "agente i7 · demo · i7 · lanzado por 3")
+        self.assertEqual(sidebar.row_tip("ws", 3, ("demo", ""), None), "workspace 3 · demo")
+
+    def test_started_lee_la_primera_linea_y_la_guarda(self):
+        d = tempfile.mkdtemp()
+        j = os.path.join(d, "agent-x.jsonl")
+        with open(j, "w") as f:
+            f.write('{"timestamp": "2026-01-02T00:00:00Z"}\n')
+        self.assertEqual(sidebar.started(j), "2026-01-02T00:00:00Z")
+        os.remove(j)                                                        # no se vuelve a leer
+        self.assertEqual(sidebar.started(j), "2026-01-02T00:00:00Z")
+        self.assertEqual(sidebar.started(os.path.join(d, "no-existe.jsonl")), "~")
+        # recién lanzado: la 1.ª línea a medio escribir no se guarda, y cuando se completa se lee
+        k = os.path.join(d, "agent-k.jsonl")
+        with open(k, "w") as f:
+            f.write('{"timestamp": "2026-01-03T00:00:00Z"')
+        self.assertEqual(sidebar.started(k), "~")
+        with open(k, "a") as f:
+            f.write("}\n")
+        self.assertEqual(sidebar.started(k), "2026-01-03T00:00:00Z")
+
+
 class SongUiPaleta(unittest.TestCase):
     def _song_ui(self):
         argv, sys.argv = sys.argv, ["song_ui", "sock", "song"]   # song_ui lee argv al importarse (es un script)

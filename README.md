@@ -52,7 +52,15 @@ quedó sin commitear, en una sola sesión de tmux.
   suena entre tus radios y `bk song hist` lista los temas que sonaron. Cuando suena el aviso de un agente, la radio
   baja sola y después vuelve a su volumen.
 - **Subagentes a la vista**: los subagentes vivos de un chat o agente (herramienta Agent) aparecen como `└` debajo de él
-  en la tira y con su descripción en el riel. Clic en el `└` (o `bk sub`) sigue su sesión en vivo, de solo lectura.
+  en la tira, como `<ventana>.<orden> <tipo>` (`3.2 reviewer`: el 2.º que lanzó el workspace 3; el orden cuenta los que
+  ya terminaron y no cambia), y con su descripción en el riel. Clic en el `└` (o `bk sub`) sigue su sesión en vivo,
+  de solo lectura.
+- **Número fijo por workspace**: cada workspace toma al crearse el número libre más bajo y lo conserva aunque cierres
+  otros (`@bk_id`; `bk _ids` los lista). `alt+N` va a ese número; la tira y el header lo muestran con su color, y
+  `bk ls`, antes del nombre del chat. Los workspaces del mismo proyecto quedan juntos en la tira, unidos con una línea.
+- **Quién lanzó a quién**: cada agente bk queda colgado (`└`) de la ventana que lo lanzó (un workspace u otro agente),
+  y en la lista de abajo dice de dónde viene: `i7 ○ ←3` (←? si esa ventana ya se cerró). bk lo anota al lanzar
+  (`@bk_parent`).
 - **Overlays**: `alt+a` agentes en vivo · `alt+g` cambios (worktrees y diff) · `alt+k` comandos · `alt+s` sesiones
   de Claude (abiertas y recientes, retomables) · `alt+u` estadísticas · `alt+,` estilo.
 - **Agentes con nombre fácil**: `bk say "sí, publicala"` le contesta al agente que te está esperando; si son varios,
@@ -155,14 +163,14 @@ bk help            # todo lo demás
 
 | Atajo | Qué hace |
 |---|---|
-| `alt+1…9` | ir al workspace N de la tira |
-| `alt+shift+1…9` | traer el agente N al lugar del chat (`alt+q` lo devuelve) |
+| `alt+1…9` | ir al workspace con ese número (el fijo de la tira y el header) |
+| `alt+shift+1…9` | traer el N-ésimo agente de la lista de abajo de la tira al lugar del chat (`alt+q` lo devuelve) |
 | `alt+0` | volver a la sesión anterior |
 | `alt+a` · `alt+g` · `alt+k` · `alt+s` · `alt+u` · `alt+,` | agentes · cambios · comandos · sesiones · stats · estilo |
 | `alt+n` | nuevo: otro chat del proyecto, un chat en una rama aparte o el workspace de otro proyecto |
 | `alt+x` | terminal rápida del proyecto (`alt+x` la esconde) |
-| clic en la tira | workspace: ir · agente: verlo en vivo (`q` cierra, `enter` va a su ventana) · `└` subagente: seguirlo en vivo |
-| mouse sobre la tira | el nombre de la fila (workspace o agente N · proyecto · feature) en la barra de tmux |
+| clic en la tira | workspace: ir · agente (o `└` de un agente bk): verlo en vivo (`q` cierra, `enter` va a su ventana) · `└` subagente: seguirlo en vivo |
+| mouse sobre la tira | el nombre de la fila (workspace N o agente · proyecto · feature · quién lo lanzó) en la barra de tmux |
 
 ## Cómo funciona
 

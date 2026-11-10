@@ -32,7 +32,7 @@ uso: bk [comando] [--dry-run]
                     si ya existe, vuelve a ella). Uno por proyecto, cada uno en su escritorio
   rerun [--go] [pr…]  volver a correr los checks de Actions que fallaron (sin --go: solo muestra)
   new | n           popup "Nuevo": chat nuevo en este proyecto u otro workspace (alt+n, o + en la tira)
-  chat [--suelto]   otro chat del proyecto, como un workspace más en la tira (alt+N); --suelto: sin
+  chat [--suelto]   otro chat del proyecto, como un workspace más en la tira (con su número fijo: alt+N); --suelto: sin
                     proyecto, en el lugar del chat (alt+q vuelve)
   chat --rama N     otro chat en su propio worktree y rama chat/N (desde la rama principal); si existe, lo reusa
   chat --nombre X   el chat nuevo se llama X (bk ls, bk say X "…", bk go X); también con --rama
@@ -85,6 +85,8 @@ uso: bk [comando] [--dry-run]
 Los comandos de agentes se corren dentro de un proyecto Barrilete.
 Contexto alto (ámbar desde 200k, rojo desde 400k): ▪ en la tira, en el riel y en la columna CTX de bk monitor;
 lib/context_hook.py se lo avisa al agente (registrarlo a mano: ver el README).
+Cada workspace tiene un número fijo (el libre más bajo al crearse; no cambia al cerrar otros): alt+N, la tira,
+el header y bk ls lo usan. Cada agente bk queda colgado en la tira de la ventana que lo lanzó (←3, ←i7).
 Comandos propios: si bk no conoce "bk foo", corre bk-foo del PATH o ${BK_PLUGINS:-~/.config/bk/plugins}/foo.
 EOF
 }
@@ -313,6 +315,20 @@ ws_term() {
   exec env -u TMUX tmux attach -t "=$name"
 }
 
+# launcher_of: quién está lanzando, para la tira (@bk_parent de la ventana nueva). ws:<sesión> si bk corre
+# en un workspace (o en su chat de visita en la sesión de agentes), ag:<ventana> si corre en un agente bk;
+# nada fuera de tmux o de bk. La sesión y no su número: los números se reusan cuando cerrás un workspace.
+launcher_of() {
+  [ -n "${TMUX_PANE:-}" ] || return 0
+  local ses id ws win
+  IFS='|' read -r ses id ws win < <(tmux display-message -p -t "$TMUX_PANE" \
+    '#{session_name}|#{@bk_id}|#{@bk_ws}|#{window_name}' 2>/dev/null) || return 0
+  if [ -n "$ws" ]; then echo "ws:$ws"
+  elif [ "$ses" = "$SESSION" ]; then echo "ag:$win"
+  elif [ -n "$id" ]; then echo "ws:$ses"
+  fi
+}
+
 # launch <ventana> <dir> <rol> <ref> <comando> [tarea] [orquestado: 1 si lo lanzó un orquestador]
 # Con tarea (ADR-005): la crea (o arranca la pendiente), le pasa BK_TASK_DIR al agente y, si el proceso
 # del agente termina sin `bk done`, la cierra como incomplete.
@@ -355,7 +371,7 @@ launch() {
     env+=(-e "BK_TASK_DIR=$tdir")
     full="$full; $(sq "$WS/bin/bk") _ended $(sq "$tdir")"
   fi
-  local pane
+  local pane parent; parent=$(launcher_of)
   if tmux has-session -t "$SESSION" 2>/dev/null; then
     pane=$(tmux new-window -d -P -F '#{pane_id}' -t "$SESSION:" -n "$win" -c "$dir" "${env[@]}" "$full")
   else
@@ -367,6 +383,8 @@ launch() {
   fi
   # La ventana queda abierta si el agente termina, para leer lo último
   tmux set-option -w -t "$SESSION:$win" remain-on-exit on >/dev/null
+  # La tira lo cuelga de la ventana que lo lanzó
+  [ -z "$parent" ] || tmux set-option -w -t "$SESSION:$win" @bk_parent "$parent" >/dev/null
   pre_register "$win" "$pane" "$dir" "$role" "$model" "$ref"
   # El título del issue/PR para bk ls y la tira (una consulta a GitHub, en segundo plano)
   (python3 "$WS/lib/agents.py" warm >/dev/null 2>&1 &)
@@ -669,6 +687,9 @@ workspace() {
     [ -z "$cx" ] || { BK_FROM="$WS_SESSION" account_use "$cx" >/dev/null; }
     tmux set-environment -t "$WS_SESSION" BK_PROJECT "$top"
     [ -z "${BK_WS_NAME:-}" ] || tmux set-option -t "$WS_SESSION" @bk_name "$BK_WS_NAME"
+    # Número fijo: el que se pida con BK_WS_ID si está libre; si no, el libre más bajo (ws_ids)
+    [ -z "${BK_WS_ID:-}" ] || tmux set-option -t "=$WS_SESSION:" @bk_id "$BK_WS_ID"
+    BK_IDS_NOSTYLE=1 ws_ids >/dev/null
     rail=$(tmux split-window -d -P -F '#{pane_id}' -h -l "${RAIL_PCT}%" -t "$chat" -c "$dir" -e "BK_PROJECT=$top" "bk rail")
     # Tira izquierda: sesiones activas (workspaces y agentes), a lo Gentle Shell 4
     local side
@@ -915,13 +936,42 @@ cmd_open() {
   info "abriendo $(project_of "$dir") en una ventana nueva → $dir"
 }
 
+# Número fijo de cada workspace (@bk_id): lo toma al crearse (el libre más bajo) y lo conserva hasta que se
+# cierra, aunque se cierren otros; alt+N va a ese número, y la tira y el header lo muestran con su color.
+# A los que no tienen (de antes de esto, o repetido porque dos se crearon a la vez: gana el más viejo) les
+# da uno acá, en orden de creación, y les rehace el header. Imprime "número<TAB>sesión" por número.
+ws_ids() {
+  local rows taken=" " out="" c name id n need=()
+  rows=$(tmux list-sessions -F '#{session_created}	#{session_name}	#{@bk_id}' 2>/dev/null \
+         | awk -F'\t' '$2 ~ /^bk/' | sort -n) || true
+  while IFS=$'\t' read -r c name id; do
+    [ -n "$name" ] || continue
+    if [[ "$id" =~ ^[1-9][0-9]*$ ]] && [[ "$taken" != *" $id "* ]]; then
+      taken+="$id "; out+="$id	$name"$'\n'
+    else
+      need+=("$name")
+    fi
+  done <<<"$rows"
+  for name in "${need[@]+"${need[@]}"}"; do
+    n=1; while [[ "$taken" == *" $n "* ]]; do n=$((n + 1)); done
+    taken+="$n "; out+="$n	$name"$'\n'
+    tmux set-option -t "=$name:" @bk_id "$n" >/dev/null 2>&1 || true
+    [ -n "${BK_IDS_NOSTYLE:-}" ] || ( WS_SESSION="$name"; ws_style ) >/dev/null 2>&1 || true
+  done
+  [ -z "$out" ] || printf '%s' "$out" | sort -n
+}
+
 # Paleta gentle (rosa sobre oscuro): bordes finos, sin título en el riel, footer en la barra de tmux
 ws_style() {
-  local t="$WS_SESSION:main" s="$WS_SESSION" pal
+  local t="$WS_SESSION:main" s="$WS_SESSION" pal id idc
+  id=$(tmux show-options -qv -t "=$s:" @bk_id 2>/dev/null || true)
   # Colores del tema (day/night) y posición del header, de lib/gentle.py y ~/.config/bk/ui.json
   pal=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import gentle as g; p = g.P
-print(p["tint"], p["rose"], p["petal"], p["text"], p["muted"], p["frame"], p["iris"], g.ui()["header"])' "$WS/lib")
-  read -r TINT ROSE PETAL TEXT MUTED FRAME IRIS HEAD <<<"$pal"
+print(p["tint"], p["rose"], p["petal"], p["text"], p["muted"], p["frame"], p["iris"], g.ui()["header"], g.id_colour(sys.argv[2]) or "-")' "$WS/lib" "${id:-0}")
+  read -r TINT ROSE PETAL TEXT MUTED FRAME IRIS HEAD idc <<<"$pal"
+  # El número fijo del workspace, con su color (el mismo que en la tira), antes del nombre
+  local tag=""
+  [ -z "$id" ] || [ "$idc" = - ] || tag="#[fg=colour$idc,bold]$id "
   tmux set-option -w -t "$t" pane-border-status off >/dev/null
   tmux set-option -w -t "$t" pane-border-lines single >/dev/null
   tmux set-option -w -t "$t" pane-border-style "fg=#$TINT" >/dev/null
@@ -936,7 +986,7 @@ print(p["tint"], p["rose"], p["petal"], p["text"], p["muted"], p["frame"], p["ir
   tmux set-option -t "$s" window-status-format '' >/dev/null
   tmux set-option -t "$s" window-status-current-format '' >/dev/null
   tmux set-option -t "$s" status-left \
-    "#[fg=#$ROSE,bold]  ✿ #{s/^bk-//:session_name} #[fg=#$MUTED,nobold]· #[fg=#$TEXT]#{s|$HOME|~|:pane_current_path} #[fg=#$PETAL,bold]#(git -C '#{pane_current_path}' branch --show-current 2>/dev/null)#[nobold] #[fg=#$MUTED]· #[fg=#$TEXT]#(bk _model #{session_name})" >/dev/null
+    "  $tag#[fg=#$ROSE,bold]✿ #{s/^bk-//:session_name} #[fg=#$MUTED,nobold]· #[fg=#$TEXT]#{s|$HOME|~|:pane_current_path} #[fg=#$PETAL,bold]#(git -C '#{pane_current_path}' branch --show-current 2>/dev/null)#[nobold] #[fg=#$MUTED]· #[fg=#$TEXT]#(bk _model #{session_name})" >/dev/null
   tmux set-option -t "$s" status-right "#[fg=#$IRIS]#(bk _footer #{session_name})  " >/dev/null
 }
 
@@ -1261,8 +1311,9 @@ case "${1:-}" in
   sound)       shift; cmd_sound "${1:-status}" ;;
   name)        shift; cmd_name "$@" ;;
   song)        shift; exec "$WS/lib/song.sh" "$@" ;;
-  _nth)        tmux list-sessions -F '#{session_created} #{session_name}' 2>/dev/null \
-                 | awk '$2 ~ /^bk/' | sort -n | awk -v n="${2:-1}" 'NR == n {print $2}' ;;
+  _nth)        ws_ids | awk -F'\t' -v n="${2:-1}" '$1 == n {print $2}' ;;   # alt+N: el workspace con ese número
+  _ids)        ws_ids ;;
+  _launcher)   launcher_of ;;   # lo que launch anota como @bk_parent (la tira lo usa; tests)
   changes)     exec python3 "$WS/lib/changes.py" ;;
   palette|k)   exec python3 "$WS/lib/palette.py" ;;
   _layout)     ws_layout "${2:-}" ;;

@@ -203,13 +203,14 @@ def subagents(sid):
 
 
 def chats(sts):
-    """Los chats de los workspaces (bk-<proyecto>, bk-<proyecto>-2…): {sesión: (pane, nombre)}."""
+    """Los chats de los workspaces (bk-<proyecto>, bk-<proyecto>-2…): {sesión: (pane, nombre, número fijo)}."""
     out = {}
     raw = sh("tmux", "list-sessions", "-F", "#{session_name}")
     for ws in raw.split():
         if not ws.startswith("bk"):
             continue
         name = sh("tmux", "show-options", "-qv", "-t", ws, "@bk_name").strip()
+        wid = sh("tmux", "show-options", "-qv", "-t", f"={ws}:", "@bk_id").strip()   # el de la tira y alt+N
         pane = ""
         for l in sh("tmux", "list-panes", "-t", f"{ws}:main", "-F", "#{pane_id}\t#{pane_start_command}\t#{pane_title}").splitlines():
             pid, start, title = (l.split("\t") + ["", ""])[:3]
@@ -224,7 +225,7 @@ def chats(sts):
                 if w == ws:
                     pane = pid
         if pane:
-            out[ws] = (pane, name)
+            out[ws] = (pane, name, wid)
     return out
 
 
@@ -355,7 +356,7 @@ def gather(fetch_titles=True, look=True, chats_too=True):
     for a in out:
         a["subs"] = subagents(sts.get(a["pane"], {}).get("_sid"))
     if chats_too:
-        for ws, (pane, name) in chats(sts).items():
+        for ws, (pane, name, wid) in chats(sts).items():
             st = sts.get(pane, {})
             state = st.get("state", "")
             why = ""
@@ -364,7 +365,7 @@ def gather(fetch_titles=True, look=True, chats_too=True):
             title = name or session_title(st.get("_sid"))
             out.append({
                 "win": "chat:" + ws, "pane": pane, "kind": "chat", "num": "", "ref": "", "pr": "",
-                "title": title, "ws": ws, "short": ws[3:] if ws.startswith("bk-") else ws,
+                "title": title, "ws": ws, "short": ws[3:] if ws.startswith("bk-") else ws, "id": wid,
                 "role": "chat", "model": "", "state": state, "asks": bool(why), "why": why, "question": "",
                 "mins": int((now - st.get("ts", now)) // 60) if st else 0,
                 "project": project_label(st.get("cwd") or ""), "subs": subagents(st.get("_sid")),
@@ -409,7 +410,12 @@ def line(a, i=None, color=True):
         status += f" · {a['queued']} en cola"
     num = f"{i:>2}  " if i is not None else ""
     name = a["short"] if a["kind"] == "chat" else a["win"]
-    if len(name) > 14:   # el final distingue: barrilete-workspace-2 → …workspace-2
+    if a["kind"] == "chat":   # el número fijo del workspace (el de la tira y alt+N), antes del nombre
+        tag = f"{a['id']} " if str(a.get("id") or "").isdigit() else ""
+        if len(tag + name) > 14:   # el final distingue: 3 mi-proyecto-largo-2 → 3 …cto-largo-2
+            name = "…" + name[-max(1, 13 - len(tag)):]
+        name = tag + name
+    elif len(name) > 14:   # el final distingue
         name = "…" + name[-13:]
     if a["kind"] == "chat" and not a["asks"]:
         mark = "◇"
