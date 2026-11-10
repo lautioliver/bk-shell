@@ -5,7 +5,7 @@ set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"; ROOT="$(dirname "$HERE")"
 source "$HERE/lib.sh"
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
-export BK_CONTEXT_HOOK_STATE="$TMP/state"
+export BK_CONTEXT_HOOK_STATE="$TMP/state" BK_HANDOFF_DIR="$TMP/handoffs"   # el rojo deja el .json del handoff acá
 export HOME="$TMP/home"; mkdir -p "$HOME"; unset TMUX_PANE   # por si algo cae al default: el tmp, no ~/.cache
 export PYTHONDONTWRITEBYTECODE=1
 

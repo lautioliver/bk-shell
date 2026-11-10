@@ -30,17 +30,22 @@ uso: bk [comando] [--dry-run]
 
   (sin comando)     el workspace del proyecto de esta carpeta: chat + riel (sesión tmux "bk-<proyecto>";
                     si ya existe, vuelve a ella y, si su chat se cerró, lo repone). Uno por proyecto
-  --dry-run         dice qué haría y no abre ni crea nada (lanzamientos, bk, bk chat, --rama, --suelto)
+  --dry-run         dice qué haría y no abre ni crea nada (lanzamientos, bk, bk chat, --rama, --suelto, --desde)
   rerun [--go] [pr…]  volver a correr los checks de Actions que fallaron (sin --go: solo muestra)
   new | n           popup "Nuevo": chat nuevo en este proyecto u otro workspace (alt+n, o + en la tira)
   chat [--suelto]   otro chat del proyecto, como un workspace más en la tira (con su número fijo: alt+N); --suelto: sin
                     proyecto, en el lugar del chat (alt+q vuelve)
   chat --rama N     otro chat en su propio worktree y rama chat/N (desde la rama principal); si existe, lo reusa
   chat --nombre X   el chat nuevo se llama X (bk ls, bk say X "…", bk go X); también con --rama
+  chat --desde N    un workspace más del proyecto que arranca con el resumen que dejó el chat del workspace N
+                    (bk handoff), en su carpeta y con su cuenta; después pregunta si cierra el viejo
+  handoff [N]       pedirle al chat del workspace N (o de este) el resumen para seguir en un chat nuevo, con
+                    una plantilla fija; --listos: los resúmenes listos (↪ en la tira y en bk s)
   name ["nombre"]   nombrar el chat de este workspace (sin nombre: el de /rename o el título de Claude; - lo borra)
   open [proyecto]   abrir el workspace de otro proyecto en una ventana nueva (sin argumento: los abiertos)
   plan "<idea>"     planner: /plan-feature en la raíz del proyecto
-  run <issue>       routing.py elige el rol → prepare.sh crea worktree → implementer en tmux
+  run <issue>       routing.py elige el rol → prepare.sh crea worktree → implementer en tmux; si el kit
+                    tiene candado de worktree, bk lo suelta antes de lanzar y bk done al cerrar
                     (--role implementer|implementer-light para forzarlo; --orchestrated si lo lanza
                     /orchestrate: el orquestador lanza al reviewer y bk no lo propone)
   review <pr>       reviewer: /review-pr en la raíz del proyecto
@@ -86,7 +91,8 @@ uso: bk [comando] [--dry-run]
 
 Los comandos de agentes se corren dentro de un proyecto Barrilete.
 Contexto alto (ámbar desde 200k, rojo desde 400k): ▪ en la tira, en el riel y en la columna CTX de bk monitor;
-lib/context_hook.py se lo avisa al agente (registrarlo a mano: ver el README).
+lib/context_hook.py se lo avisa al agente (registrarlo a mano: ver el README); a 400k le pide el resumen de handoff.
+Opcional: lib/tmux_guard.py, un hook que frena a un agente que iba a tirar tu servidor de tmux (ver el README).
 Cada workspace tiene un número fijo (el libre más bajo al crearse; no cambia al cerrar otros): alt+N, la tira,
 el header y bk ls lo usan. Cada agente bk queda colgado en la tira de la ventana que lo lanzó (←3, ←i7).
 Comandos propios: si bk no conoce "bk foo", corre bk-foo del PATH o ${BK_PLUGINS:-~/.config/bk/plugins}/foo.
@@ -281,19 +287,24 @@ account_use() {
   fi
 }
 
+# pane_sid <pane>: "id-de-la-sesión-de-Claude estado" del chat de ese pane, del registro más nuevo que lo nombra
+# (el hook de estado nombra cada registro con el id de la sesión). Vacío si no hay.
+pane_sid() {
+  local f
+  while IFS= read -r f; do
+    grep -q "\"pane\": *\"$1\"" "$f" 2>/dev/null || continue
+    printf '%s %s\n' "$(basename "$f" .json)" "$(sed -nE 's/.*"state": *"([a-z]+)".*/\1/p' "$f" | head -1)"
+    return
+  done < <(ls -t "$STATE_DIR"/*.json 2>/dev/null)
+}
+
 # relaunch_chat <sesión>: el chat principal vuelve a arrancar con la cuenta de la sesión, retomando su
 # conversación. No si está trabajando o esperando una respuesta tuya.
 relaunch_chat() {
-  local s="$1" pane f sid="" st="" dir top
+  local s="$1" pane sid="" st="" dir top
   pane=$(tmux list-panes -t "$s:main" -F '#{pane_id} #{pane_title}' 2>/dev/null | awk '/✿ chat/ {print $1; exit}')
   [ -n "$pane" ] || die "no encontré el chat principal de $s"
-  # El registro más nuevo de ese pane (el hook de estado lo nombra con el id de la sesión de Claude)
-  while IFS= read -r f; do
-    grep -q "\"pane\": *\"$pane\"" "$f" 2>/dev/null || continue
-    sid=$(basename "$f" .json)
-    st=$(sed -nE 's/.*"state": *"([a-z]+)".*/\1/p' "$f" | head -1)
-    break
-  done < <(ls -t "$STATE_DIR"/*.json 2>/dev/null)
+  read -r sid st < <(pane_sid "$pane"; echo)
   case "$st" in working|waiting|background) die "el chat está trabajando o te espera: relanzalo cuando termine" ;; esac
   case "$sid" in bk-*) sid="" ;; esac
   dir=$(tmux display-message -p -t "$pane" '#{pane_current_path}')
@@ -703,7 +714,7 @@ WS_SESSION="${BK_WS_SESSION:-}"
 
 workspace() {
   # --dry-run: decir qué abriría y nada más (todo lo que abre workspaces pasa por acá: bk ws, bk chat,
-  # --rama). La carpeta puede no existir todavía (el worktree de --rama no se crea en dry-run).
+  # --rama, --desde). La carpeta puede no existir todavía (el worktree de --rama no se crea en dry-run).
   if [ "$DRY" -eq 1 ]; then
     info "(dry-run: abriría el workspace ${WS_SESSION:-bk-$(project_of "${1:-$PWD}" 2>/dev/null)} en ${1:-$PWD})"
     return 0
@@ -746,6 +757,7 @@ workspace() {
   else
     ws_chat_pane "$WS_SESSION" >/dev/null   # si el chat se cerró, volver a entrar lo repone
   fi
+  [ -z "${WS_NOSWITCH:-}" ] || return 0   # bk chat --desde: primero pregunta si cierra el viejo
   if [ -n "${TMUX:-}" ]; then tmux switch-client ${BK_CLIENT:+-c "$BK_CLIENT"} -t "$WS_SESSION"; else exec tmux attach -t "$WS_SESSION"; fi
 }
 
@@ -869,12 +881,98 @@ cmd_name() {
   info "$ws se llama «$*» (bk say/go $*)"
 }
 
+# chat_pane <sesión>: el pane del chat principal de un workspace (por su título; sin recrearlo como ws_chat_pane)
+chat_pane() {
+  tmux list-panes -t "=$1:main" -F '#{pane_id} #{pane_title}' 2>/dev/null | awk '/✿ chat/ {print $1; exit}'
+}
+
+# ws_session <número|sesión>: la sesión de tmux del workspace con ese número (alt+N), o la misma si ya es una
+ws_session() {
+  case "$1" in
+    [0-9]*) ws_ids | awk -F'\t' -v n="$1" '$1 == n {print $2}' ;;
+    *)      printf '%s\n' "$1" ;;
+  esac
+}
+
+# bk chat --desde <ws|sesión>: seguir en un chat nuevo desde el resumen que dejó otro (lib/handoff.py). Un
+# workspace más del proyecto, en la misma carpeta y con la misma cuenta, que arranca con el resumen como primer
+# mensaje: lo pasa como argumento de claude (no con send-keys, que corta o rompe acentos y backticks) y el chat
+# nuevo lo borra al tomarlo. Después pregunta si cierra el workspace viejo; sin terminal, no lo cierra.
+# Con --dry-run imprime "sesión<TAB>carpeta<TAB>cuenta<TAB>comando del chat" y no abre nada.
+chat_from() {
+  local q="$1" row sid dir acct old
+  [ -n "$q" ] || die "bk chat --desde <número de workspace|sesión>   (los resúmenes listos: bk handoff --listos)"
+  row=$(python3 "$WS/lib/handoff.py" find "$q") \
+    || die "no hay un resumen listo de «$q» (bk handoff $q lo pide; los listos: bk handoff --listos)"
+  IFS=$'\t' read -r sid dir acct old <<<"$row"
+  [ -d "$dir" ] || die "la carpeta del resumen ya no existe: $dir"
+  local top base k=2; top=$(project_top "$dir"); base="bk-$(project_of "$top")"
+  while tmux has-session -t "=$base-$k" 2>/dev/null; do k=$((k + 1)); done
+  [ -z "${BK_ACCOUNT:-}" ] || acct="$BK_ACCOUNT"   # bk --account X chat --desde 5: manda la que pediste
+  # la cuenta del resumen manda sobre la de la sesión desde donde lo abrís ("default" = la principal)
+  WS_SESSION="$base-$k" WS_NOSWITCH=1 BK_ACCOUNT="$acct"
+  WS_CHAT_CMD="p=\$(python3 $(sq "$WS/lib/handoff.py") take $(sq "$sid")) && claude -- \"\$p\" || claude"
+  if [ "$DRY" -eq 1 ]; then printf '%s\t%s\t%s\t%s\n' "$WS_SESSION" "$dir" "$acct" "$WS_CHAT_CMD"; return; fi
+  workspace "$dir"
+  local new="$WS_SESSION" ans="" busy=""
+  info "→ $new sigue desde ${old:-$sid}, con la cuenta $acct"
+  if [ -n "$old" ] && [ "$old" != "$new" ] && tmux has-session -t "=$old" 2>/dev/null; then
+    case "$(pane_sid "$(chat_pane "$old")" | cut -d' ' -f2)" in working|background) busy=" ¡su chat está trabajando!" ;; esac
+    if printf '¿Cierro %s, el workspace viejo, con su chat, riel y tira?%s [s/N] ' "$old" "$busy" 2>/dev/null >/dev/tty; then
+      read -r ans </dev/tty 2>/dev/null || ans=""
+    fi
+  else
+    old=""
+  fi
+  [ -z "${TMUX:-}" ] || tmux switch-client ${BK_CLIENT:+-c "$BK_CLIENT"} -t "$new"
+  case "$ans" in
+    s|S|si|sí|Sí|y|Y) tmux kill-session -t "=$old" && info "cerré $old" ;;
+    *) [ -z "$old" ] || info "$old sigue abierto (alt+s y x lo cierra)" ;;
+  esac
+  [ -n "${TMUX:-}" ] || exec tmux attach -t "$new"
+}
+
+# bk handoff [ws|sesión]: le pide al chat de ese workspace (o de este) el resumen para seguir en un chat nuevo,
+# con la plantilla de lib/handoff.py. Lo mismo que el aviso rojo de context_hook.py, pero cuando quieras.
+#   desde otro lado (otra terminal, otro workspace): le escribe al chat una línea con el comando que imprime el pedido
+#   desde el mismo chat (`! bk handoff`, o el agente): imprime el pedido, que así queda en la conversación
+# bk handoff --pedido [--sid S]: el pedido completo, para el chat de este pane · bk handoff --listos: los listos
+cmd_handoff() {
+  set +euo pipefail
+  local s pane sid="" st wsid
+  case "${1:-}" in
+    --listos|-l) python3 "$WS/lib/handoff.py" list; return ;;
+    --pedido)
+      [ "${2:-}" = --sid ] && sid="${3:-}"
+      [ -n "$sid" ] || [ -z "${TMUX_PANE:-}" ] || read -r sid st < <(pane_sid "$TMUX_PANE"; echo)
+      [ -n "$sid" ] || die "no sé qué sesión de Claude es esta: bk handoff --pedido --sid <id>"
+      exec python3 "$WS/lib/handoff.py" pedido --sid "$sid" ${TMUX_PANE:+--pane "$TMUX_PANE"} ;;
+  esac
+  need_tmux
+  s=$(ws_session "${1:-$(caller_session)}")
+  case "$s" in bk*) tmux has-session -t "=$s" 2>/dev/null || die "no hay un workspace $s" ;;
+    *) die "bk handoff [número de workspace]: desde un workspace, o nombrando uno" ;; esac
+  pane=$(chat_pane "$s")
+  [ -n "$pane" ] || die "no encontré el chat de $s (si hay un agente en su lugar, alt+q lo devuelve)"
+  read -r sid st < <(pane_sid "$pane"; echo)
+  case "$sid" in ""|bk-*) die "no sé qué sesión de Claude corre en el chat de $s" ;; esac
+  if [ "$pane" = "${TMUX_PANE:-}" ]; then exec python3 "$WS/lib/handoff.py" pedido --sid "$sid" --pane "$pane"; fi
+  # Un menú abierto: el Enter elegiría la opción marcada (como en bk say)
+  [ -z "$(open_menu "$pane")" ] || die "el chat de $s tiene un menú abierto: respondelo y volvé a pedirlo"
+  tmux send-keys -t "$pane" -l -- "Pasemos a un chat nuevo: corré \`bk handoff --pedido --sid $sid\` y hacé lo que dice."
+  sleep 0.2
+  tmux send-keys -t "$pane" Enter
+  wsid=$(tmux show-options -qv -t "=$s:" @bk_id)
+  info "→ $s: le pedí el resumen. Cuando lo escriba: bk chat --desde ${wsid:-$s}"
+}
+
 cmd_chat() {
   set +euo pipefail
   local loose=0 branch="" want_branch=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --suelto) loose=1; shift ;;
+      --desde) chat_from "${2:-}"; return ;;
       --nombre) export BK_WS_NAME="${2:?--nombre necesita un nombre}"; shift 2 ;;
       --rama) want_branch=1; branch="${2:-}"; if [ $# -ge 2 ]; then shift 2; else shift; fi ;;
       *) break ;;
@@ -1272,6 +1370,29 @@ cmd_fix() {
   launch "$win" "$wt" "$role" "#${issue:-$n}" "Retomás el PR #$n (rama $branch, ya hecha por otro implementer). Seguí el flujo de /implement-issue ${issue:-} para correcciones de un PR existente (TDD, red.sh, verify, cuerpo del PR) y no abras otro PR. Tarea: $msg" "pr$n-$role" "$orch"
 }
 
+# lock_release <repo> <worktree> <nombre>: suelta el candado del worktree (scripts/agents/worktree-lock.sh de
+# Barrilete Kit) si es de este proceso con ese nombre. Libre, vencido o un kit sin candado: nada que hacer (0).
+# Si es de otro agente vivo o el script falla: imprime lo que dijo y sale con 1.
+lock_release() {
+  local sh="$1/scripts/agents/worktree-lock.sh" out
+  [ -x "$sh" ] || return 0
+  out=$(WORKTREE_LOCK_AGENT="$3" "$sh" release "$2" 2>&1) || { printf '%s' "$out"; return 1; }
+  case "$out" in held:*) printf '%s' "$out"; return 1 ;; esac
+}
+
+# done_release: bk done cerró la tarea de este agente (BK_TASK_DIR): suelta su candado del worktree, que tomó
+# con el nombre de la tarea. Corre como hijo del claude del agente, así que el dueño es el mismo proceso.
+# Nunca hace fallar el cierre: si el candado es de otro, avisa.
+done_release() {
+  local d="${BK_TASK_DIR:-}" wt repo out
+  [ -f "$d/task.json" ] || return 0
+  wt=$(jq -r '.worktree // ""' "$d/task.json"); repo=$(jq -r '.repo // ""' "$d/task.json")
+  [ -d "$wt" ] || return 0
+  [ -x "$repo/scripts/agents/worktree-lock.sh" ] || repo=$wt
+  out=$(lock_release "$repo" "$wt" "$(basename "$d")") || printf 'bk: no solté el candado de %s: %s\n' "$wt" "$out" >&2
+  return 0
+}
+
 cmd_run() {
   local n="" role="" orch=0
   while [ $# -gt 0 ]; do
@@ -1306,11 +1427,15 @@ cmd_run() {
 
   # Mismo camino que /orchestrate: fetch una vez, prepare.sh valida, asigna y crea el worktree
   git -C "$root" fetch -q origin
-  local prep wt
-  prep=$(cd "$root" && .claude/skills/implement-issue/prepare.sh "$n" --worktree 2>&1) \
+  # prepare.sh toma el candado del worktree a nombre de la tarea y bk lo suelta antes de lanzar: el agente lo
+  # toma como su primer paso y bk done lo suelta. Sin esto el candado quedaba a nombre del proceso que llamó a
+  # bk (un chat que sigue vivo) y el agente veía su propio worktree como de otro.
+  local prep wt held
+  prep=$(cd "$root" && WORKTREE_LOCK_AGENT="$n-$role" .claude/skills/implement-issue/prepare.sh "$n" --worktree 2>&1) \
     || { printf '%s\n' "$prep" >&2; die "prepare.sh rechazó #$n (ver arriba)"; }
   wt=$(sed -nE 's/^Worktree: (.+)$/\1/p' <<<"$prep" | tail -1)
   [ -d "$wt" ] || { printf '%s\n' "$prep" >&2; die "prepare.sh no informó el worktree"; }
+  held=$(lock_release "$root" "$wt" "$n-$role") || die "no pude soltar el candado de $wt: $held"
   launch "i$n" "$wt" "$role" "#$n" "/implement-issue $n" "$n-$role" "$orch"
 }
 
@@ -1355,6 +1480,7 @@ case "${1:-}" in
   watch)       shift; watch "${1:-}" ;;
   stop)        shift; stop "${1:-}" ;;
   done)        shift; rc=0; python3 "$TASKS" done "$@" || rc=$?
+               [ "$rc" -ne 0 ] || done_release
                sketchybar --trigger agent_update >/dev/null 2>&1 || true; exit $rc ;;
   tasks)       shift; case "${1:-}" in prune) shift; exec python3 "$TASKS" prune "$@" ;;
                                      *) exec python3 "$TASKS" list "$@" ;; esac ;;
@@ -1386,6 +1512,7 @@ case "${1:-}" in
   _layout)     ws_layout "${2:-}" ;;
   _agent)      ws_agent "${2:-}" "${3:-0}" ;;
   chat)        shift; cmd_chat "$@" ;;
+  handoff)     shift; cmd_handoff "$@" ;;
   new|n)       exec python3 "$WS/lib/new.py" ;;
   _footer)     ws_footer "${2:-}" ;;
   _model)      ws_model "${2:-}" ;;

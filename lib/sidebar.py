@@ -9,6 +9,8 @@
             · sin claude (glifo y color de cada estado: gentle.STATES, la misma tabla que el riel y el monitor)
     1 ●▪    ▪ a la derecha: la sesión ya carga mucho contexto (ámbar desde 200k, rojo desde 400k; cada
             llamada lo vuelve a leer y a pagar). El número exacto, en el tooltip.
+    1 ○↪    ↪ a la derecha (en lugar del ▪): ese chat dejó el resumen para seguir en uno nuevo (lib/handoff.py);
+            bk chat --desde N o «Seguir desde ws N» en alt+n lo toma.
     └⠋3.2 reviewer  debajo de un chat o agente: sus subagentes vivos (herramienta Agent), por <ventana>.<orden
             en que los lanzó> y su tipo; la descripción y el id, en el tooltip; clic = su sesión en un popup
     └○i7    y los agentes bk que lanzó, por su ventana; clic = ese agente
@@ -24,6 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import agents as AG  # noqa: E402  (nombre de los chats: bk name, /rename o el título de Claude)
 import gentle as G  # noqa: E402
 import usage as U   # noqa: E402  (contexto de cada sesión: context_of, los umbrales y el formato)
+import handoff as HO  # noqa: E402  (resúmenes listos para seguir en un chat nuevo)
 
 BK = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "bin", "bk")
 
@@ -257,6 +260,14 @@ def link_projects(blocks):
     return out
 
 
+READY = set()   # workspaces cuyo chat dejó un resumen listo (lo llena items())
+
+
+def ready_ws(chats, sids):
+    """De [(workspace, sid del chat)], los workspaces cuyo chat dejó un resumen listo."""
+    return {ws for ws, sid in chats if sid and sid in sids}
+
+
 def items():
     """Las filas de la tira: (tipo, texto, destino del clic, estado, (proyecto, detalle), número o ←padre,
     contexto, línea). Tipos: ws (workspace; en el 6.º lugar, su número fijo), ag (agente bk; en el 6.º lugar,
@@ -288,7 +299,7 @@ def items():
         return [("sub", sub_name(owner, j), "sub:" + j, "background" if bg else "working", ("", d), None, None)
                 for d, bg, j in subagents(sid)]
 
-    blocks = []
+    blocks, chat_sids = [], []
     for wid, name in wss:
         # Estado del chat del workspace (el pane que corre claude en la ventana main)
         state, sid, info, ctx = "none", None, None, None
@@ -306,6 +317,7 @@ def items():
                 state = s
                 sid = (st.get(pid) or {}).get("_sid")
                 ctx = U.context_of(sid)
+                chat_sids.append((name, sid))
         info = info or (name[3:], "")
         proj = sh("tmux", "show-environment", "-t", f"={name}", "BK_PROJECT").strip().partition("=")[2] or info[0]
         if proj != info[0]:   # el tooltip dice el proyecto del workspace, no el de la carpeta del chat (cd)
@@ -313,6 +325,8 @@ def items():
         blocks.append((("ws", name, name, state, info, wid, ctx, proj),
                        (subs_of(sid, str(wid)) if sid else []) + by("ws:" + name)))
     out = link_projects(blocks)
+    READY.clear()
+    READY.update(ready_ws(chat_sids, HO.ready_sids()))
     for win, pid, state, ctx, parent, info in agents:
         kind, _, who = parent.partition(":")
         src = (str(ids[who]) if kind == "ws" and who in ids else who if kind == "ag" and who in wins
@@ -378,18 +392,23 @@ def dot_for(state, tick, attrs):
     return g, attrs[color]
 
 
-def ctx_mark(ctx):
-    """El ▪ de contexto alto de una fila: (glifo, "warn" | "high"), o None por debajo de 200k o sin dato."""
+def ctx_mark(ctx, ready=False):
+    """La marca a la derecha de una fila: ↪ si su chat dejó un resumen listo ("ready"), si no el ▪ de contexto
+    alto ("warn" | "high"); None por debajo de 200k o sin dato. (glifo, clave del color)"""
+    if ready:
+        return ("↪", "ready")
     lvl = U.ctx_level(ctx)
     return ("▪", lvl) if lvl else None
 
 
-def row_tip(kind, num, info, ctx=None, parent=""):
-    """El tooltip de una fila de workspace o agente: tipo N · proyecto · feature · quién lo lanzó · contexto."""
+def row_tip(kind, num, info, ctx=None, parent="", ready=False):
+    """El tooltip de una fila de workspace o agente: tipo N · proyecto · feature · quién lo lanzó · contexto
+    · el resumen listo para seguir."""
     proj, feat = info
     return (f"{'workspace' if kind == 'ws' else 'agente'} {num} · {proj}" + (f" · {feat}" if feat else "")
             + (f" · lanzado por {parent}" if parent else "")
-            + (f" · {U.human_ctx(ctx)} de contexto" if ctx else ""))
+            + (f" · {U.human_ctx(ctx)} de contexto" if ctx else "")
+            + (f" · ↪ resumen listo: bk chat --desde {num} (o alt+n)" if ready else ""))
 
 
 def branch_tip(row):
@@ -412,7 +431,7 @@ def ui(scr):
     hover_y, hover_t, tips = -1, 0.0, {}
     A = G.curses_attrs(ids=True)   # los mismos colores que el riel, de día y de noche (+ ids y contexto)
     MUTED, ROSE, IRIS = (A[k] for k in ("muted", "rose", "iris"))
-    CTX = {"warn": A["warn"] | curses.A_BOLD, "high": A["high"] | curses.A_BOLD}
+    CTX = {"warn": A["warn"] | curses.A_BOLD, "high": A["high"] | curses.A_BOLD, "ready": ROSE | curses.A_BOLD}
     n_ids = len(G.ID_NIGHT)
 
     def id_attr(n):
@@ -474,12 +493,13 @@ def ui(scr):
             x = 1 + max(1, len(name)) + (0 if kind == "ws" and len(name) > 1 else 1)
             if x < W - 1:
                 scr.addnstr(y, x, dot, 1, col)
-            mark = ctx_mark(ctx)
+            ready = kind == "ws" and label in READY
+            mark = ctx_mark(ctx, ready)
             if mark and x + 1 < W - 1:
                 scr.addnstr(y, x + 1, mark[0], 1, CTX[mark[1]])
             if kind == "ag" and wid and x + 2 < W - 1:   # ←quién lo lanzó
                 scr.addnstr(y, x + 2, f"←{clean(wid)}", W - 1 - (x + 2), MUTED)
-            tips[y] = row_tip(kind, num, info, ctx, wid if kind == "ag" else "")
+            tips[y] = row_tip(kind, num, info, ctx, wid if kind == "ag" else "", ready)
             rowmap[y] = target
             y += 1
         # "+" al pie: Nuevo (chat o workspace), igual que alt+n

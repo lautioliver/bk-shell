@@ -31,7 +31,9 @@ quedó sin commitear, en una sola sesión de tmux.
 - **Un workspace por proyecto** (`bk`): sesión de tmux `bk-<proyecto>` con el chat, el riel y la tira de sesiones.
   `bk open <proyecto>` abre otro en una ventana nueva; cada escritorio puede tener el suyo.
 - **Agentes de Barrilete Kit en paralelo**: `bk run <issue>`, `bk review <pr>`, `bk fix <pr> "…"`, `bk plan "…"`,
-  cada uno en su ventana y su worktree, con el modelo que diga `roles.yml`.
+  cada uno en su ventana y su worktree, con el modelo que diga `roles.yml`. Si el kit tiene candado de worktree
+  (`scripts/agents/worktree-lock.sh`), `bk run` corre `prepare.sh` con el nombre de la tarea, suelta el candado
+  antes de lanzar (si es de otro agente vivo, no lanza) y `bk done` suelta el del agente al cerrar.
 - **Modos por rol**: la tercera columna de `roles.yml` dice cómo lanza el orquestador cada rol: `main` (la sesión
   principal), `bk` (ventana propia, te puede preguntar en el momento) o `sub` (subagente que le devuelve el resultado).
   Sin modo es `bk`. `bk mode <rol>` lo muestra; `bk roles`, todos.
@@ -41,6 +43,13 @@ quedó sin commitear, en una sola sesión de tmux.
 - **Chats por rama**: `bk chat --rama <nombre>` (o `alt+n` → *Chat en una rama aparte*) crea `../<repo>-wt/chat-<nombre>`
   en la rama `chat/<nombre>`, desde la rama principal de `origin`, y lo abre como workspace `bk-<proyecto>-<nombre>`.
   Varios cambios del mismo proyecto a la vez sin pisarse; si ya existe, lo reusa.
+- **Seguir en un chat nuevo (handoff)**: `bk handoff [N]` le pide al chat del workspace N (o de este) un resumen con
+  una plantilla fija (hecho, qué falta en orden, qué te espera, qué no tocar, archivos y comandos), que escribe en
+  `${XDG_STATE_HOME:-~/.local/state}/bk/handoffs/<sesión>.md`; bk completa solo de dónde viene (workspace, rama,
+  carpeta y cuenta). La tira y `alt+s` marcan ese chat con `↪`. `bk chat --desde N` (o `alt+n` → *Seguir desde ws N*)
+  abre un workspace más del proyecto, en esa carpeta y con esa cuenta, que arranca con el resumen como primer mensaje
+  y lo borra; después pregunta si cerrás el viejo. `bk handoff --listos` los lista. El rojo de
+  `lib/context_hook.py` pide el mismo resumen.
 - **Terminal rápida**: `alt+x` abre una terminal del proyecto flotando sobre el workspace (una sesión `term-<proyecto>`
   por repo, que arranca en la carpeta desde donde la abriste); `alt+x` de nuevo la esconde y vuelve como la dejaste. `bk term`.
 - **Sonidos**: un sonido por tipo de pedido de los agentes, no por agente: terminó, te pregunta, pide permiso, error
@@ -141,6 +150,21 @@ no lo registra: si lo querés, sumalo a mano en `~/.claude/settings.json`, en lo
 ```
 
 (si ya tenés esos eventos, agregá el `{"type": "command", …}` a su lista en vez de reemplazarla).
+A 400k le pide al agente el resumen con la plantilla de `lib/handoff.py` (ver *Seguir en un chat nuevo*).
+
+### Baranda de tmux (opcional)
+
+`lib/tmux_guard.py` es un hook `PreToolUse` de Claude Code para que un agente no tire tu tmux por error: frena
+`tmux kill-server` que no apunta a otro servidor (`-L`, `-S` o `env -u TMUX`; con la variable `TMUX` definida,
+`TMUX_TMPDIR` no alcanza y mata el tuyo), `pkill`/`killall` de tmux y `kill <pid>` del server, y pregunta antes de
+`tmux kill-session` de `agents` o de un `bk-…`. Es contra accidentes, no contra quien quiera esquivarlo. El
+instalador no lo registra: si lo querés, sumalo a mano en `~/.claude/settings.json`:
+
+```json
+{ "hooks": {
+  "PreToolUse": [{ "matcher": "Bash", "hooks": [{ "type": "command", "command": "python3 ~/.bk-shell/lib/tmux_guard.py" }] }]
+} }
+```
 
 Actualizar: volvé a correr el instalador. Desinstalar: `bash ~/.bk-shell/install.sh --uninstall`.
 
@@ -167,7 +191,7 @@ bk help            # todo lo demás
 | `alt+shift+1…9` | traer el N-ésimo agente de la lista de abajo de la tira al lugar del chat (`alt+q` lo devuelve) |
 | `alt+0` | volver a la sesión anterior |
 | `alt+a` · `alt+g` · `alt+k` · `alt+s` · `alt+u` · `alt+,` | agentes · cambios · comandos · sesiones · stats · estilo |
-| `alt+n` | nuevo: otro chat del proyecto, un chat en una rama aparte o el workspace de otro proyecto |
+| `alt+n` | nuevo: otro chat del proyecto, un chat en una rama aparte, seguir desde un resumen (handoff) o el workspace de otro proyecto |
 | `alt+x` | terminal rápida del proyecto (`alt+x` la esconde) |
 | clic en la tira | workspace: ir · agente (o `└` de un agente bk): verlo en vivo (`q` cierra, `enter` va a su ventana) · `└` subagente: seguirlo en vivo |
 | mouse sobre la tira | el nombre de la fila (workspace N o agente · proyecto · feature · quién lo lanzó) en la barra de tmux |
@@ -199,7 +223,7 @@ bk help            # todo lo demás
 - Antes de lanzar un agente, en macOS, bk mira la memoria libre (`memory_pressure`): con menos de
   `BK_MEM_MIN` % (15) no lanza, porque sin memoria el sistema puede matar al server de tmux con todo adentro.
   `BK_FORCE=1` lo saltea; en Linux no frena.
-- `bk --dry-run` (con `bk`, `bk chat`, `--rama`, `--suelto` o un lanzamiento) dice qué abriría o lanzaría y no
+- `bk --dry-run` (con `bk`, `bk chat`, `--rama`, `--suelto`, `--desde` o un lanzamiento) dice qué abriría o lanzaría y no
   crea nada: ni sesiones, ni ramas, ni worktrees.
 - `bk s`: el chat de cada workspace se ve como `ws N` (su número fijo, con su color); `x` cierra un agente o,
   con confirmación, un workspace entero (no el tuyo). Un estado cuyo pane de tmux ya no existe se borra y la

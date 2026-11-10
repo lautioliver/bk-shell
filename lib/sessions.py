@@ -6,6 +6,8 @@ Abajo, las recientes de todas las carpetas (~/.claude/projects): Enter la retoma
 `claude --resume` en una ventana nueva de la sesión tmux "agents", en su carpeta.
 
 Cada chat de un workspace lleva su número fijo (el de la tira y alt+N), con su color: "ws 3".
+Con ↪ en lugar del ●: ese chat dejó el resumen para seguir en uno nuevo (lib/handoff.py). También en recientes,
+si ya se cerró: bk chat --desde o «Seguir desde» en alt+n lo toma.
 
 Teclas: ↑↓/jk moverse · / buscar · enter abrir · x cerrar (un agente: su ventana; un workspace: todo el
 workspace, con confirmación; la conversación queda en recientes) · q/esc salir
@@ -14,6 +16,7 @@ import curses, glob, json, os, re, subprocess, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import gentle as G  # noqa: E402  (paleta del tema, una sola para todas las vistas)
+import handoff as HO  # noqa: E402  (resúmenes listos para seguir en un chat nuevo)
 
 PROJECTS = os.path.expanduser("~/.claude/projects")
 STATE = os.environ.get("BK_STATE_DIR", os.path.expanduser("~/.cache/bk/agents"))
@@ -163,7 +166,15 @@ def load():
     except OSError:
         pass
     rows_open.sort(key=lambda r: -r["mtime"])
-    return rows_open, rows_recent
+    sids = HO.ready_sids()
+    return mark_handoffs(rows_open, sids), mark_handoffs(rows_recent, sids)
+
+
+def mark_handoffs(rows, sids):
+    """Marca (handoff=True) las filas cuya sesión dejó un resumen listo."""
+    for r in rows:
+        r["handoff"] = bool(r.get("sid")) and r["sid"] in sids
+    return rows
 
 
 def where(pane):
@@ -312,7 +323,7 @@ def ui(scr):
                 continue
             attr = curses.A_REVERSE if i == cur else 0
             if it.get("state"):
-                mark = "●"
+                mark = "↪" if it.get("handoff") else "●"
                 where = it.get("window") or "afuera"
                 st = STATE_TXT.get(it["state"], it["state"] or "")
                 head = f" {mark} {where:<10} {it['proj'][:18]:<18} "
@@ -326,7 +337,7 @@ def ui(scr):
                 if it.get("wsid"):   # "ws 3" con el color de su número
                     scr.addnstr(row, 3, where, W - 4, attr | id_attr(it["wsid"]))
             else:
-                head = f"   {it['proj'][:29]:<29} "
+                head = f" {'↪' if it.get('handoff') else ' '} {it['proj'][:29]:<29} "
                 tail = f" {ago(it['mtime']):>12} "
                 scr.addnstr(row, 0, " " * (W - 1), W - 1, attr)
                 scr.addnstr(row, 0, head, W - 1, attr | BLUE)
@@ -335,6 +346,10 @@ def ui(scr):
                     scr.addnstr(row, W - 1 - len(tail), tail, len(tail), attr | GRAY)
         help_ = "escribí para buscar · enter abrir · esc listo" if typing else \
             "↑↓ moverse · / buscar · enter abrir · x cerrar · r recargar · q salir"
+        if not typing and 0 <= cur < len(items) and items[cur][0] != "h" and items[cur][1].get("handoff"):
+            it = items[cur][1]
+            help_ = (f"↪ dejó el resumen para seguir: bk chat --desde {it.get('wsid') or it['sid'][:8]} "
+                     "(o «Seguir desde» en alt+n) · " + help_)
         if confirm:
             busy = " ¡su chat está trabajando!" if confirm[3] in ("working", "background", "waiting") else ""
             msg = f"¿Cerrar el workspace {confirm[2] or ''} ({confirm[1]}) con su chat, riel y tira?{busy} y/n"
@@ -402,9 +417,9 @@ def main():
     if not sys.stdout.isatty():
         o, r = load()
         for x in o:
-            print("●", x.get("window") or "afuera", x["proj"], STATE_TXT.get(x.get("state"), ""), x["title"][:60], sep="\t")
+            print("↪" if x.get("handoff") else "●", x.get("window") or "afuera", x["proj"], STATE_TXT.get(x.get("state"), ""), x["title"][:60], sep="\t")
         for x in r[:20]:
-            print(" ", x["proj"], ago(x["mtime"]), x["title"][:60], sep="\t")
+            print("↪" if x.get("handoff") else " ", x["proj"], ago(x["mtime"]), x["title"][:60], sep="\t")
         return
     after = curses.wrapper(ui)
     for cmd in after or []:
