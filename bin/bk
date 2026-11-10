@@ -12,6 +12,11 @@ SESSION="${BK_SESSION:-agents}"
 STATE_DIR="${BK_STATE_DIR:-$HOME/.cache/bk/agents}"
 export BK_STATE_DIR="$STATE_DIR"   # lib/agents.py lee el mismo estado
 DRY=0
+# Un chat que heredó el entorno de un agente (launch-env puede darle al agente el gh de un bot, con su
+# config en la caché de bk) no usa ese gh: bk y lo que bk corre vuelven al tuyo.
+case "${GH_CONFIG_DIR:-}" in
+  "${BK_CACHE_DIR:-$HOME/.cache/bk}/bot"|"${BK_CACHE_DIR:-$HOME/.cache/bk}/bot/"*) unset GH_CONFIG_DIR GH_TOKEN ;;
+esac
 TASKS="$WS/lib/tasks.py"   # tareas de los agentes (ADR-005 del kit): task.json + events.jsonl
 
 # Los atajos de tmux pasan BK_FROM/BK_CLIENT a los popups, pero el comando de display-popup no
@@ -102,7 +107,10 @@ Opcional: lib/tmux_guard.py, un hook que frena a un agente que iba a tirar tu se
 Cada workspace tiene un número fijo (el libre más bajo al crearse; no cambia al cerrar otros): alt+N, la tira,
 el header y bk ls lo usan. Cada agente bk queda colgado en la tira de la ventana que lo lanzó (←3, ←i7).
 Comandos propios: si bk no conoce "bk foo", corre bk-foo del PATH o ${BK_PLUGINS:-~/.config/bk/plugins}/foo,
-con BK_WS (la carpeta de bk), BK_SESSION (la sesión de tmux de los agentes) y DRY=1 si vino --dry-run.
+con BK_WS (la carpeta de bk), BK_SESSION (la sesión de tmux de los agentes), BK_STATE_DIR y DRY=1 si vino --dry-run.
+Enganches (comandos propios con nombre fijo): on-empty (bk sin ningún workspace abierto, antes de abrirlo),
+launch-env (antes de lanzar un agente: sus líneas NOMBRE=valor van al entorno del agente) y, en la paleta,
+${BK_CONFIG_DIR:-~/.config/bk}/palette.d/*.tsv (grupo, etiqueta, comando, argumento y tipo, separados con tabs).
 EOF
 }
 
@@ -414,7 +422,10 @@ launch() {
     if [ "$other" != "$mine" ]; then win="${mine:0:8}-$win"; fi
     has_window "$win" && die "ya existe la ventana '$win' (bk go $win, o bk stop $win)"
   fi
-  local env=(-e "BARRILETE_ROLE=$role" -e "BARRILETE_MODEL=$model" -e "BARRILETE_PROVIDER=$provider")
+  # Las variables del comando propio launch-env van primero: las de bk (rol, cuenta, tarea) les ganan
+  local env=() kv
+  while IFS= read -r kv; do env+=(-e "$kv"); done < <(launch_env "$dir" "$role")
+  env+=(-e "BARRILETE_ROLE=$role" -e "BARRILETE_MODEL=$model" -e "BARRILETE_PROVIDER=$provider")
   [ -n "$ref" ] && env+=(-e "BARRILETE_ISSUE=$ref")
   env+=("${CTA[@]+"${CTA[@]}"}")
   if [ -n "$tid" ]; then
@@ -1499,6 +1510,73 @@ find_plugin() {
   return 1
 }
 
+# Lo que todo comando propio recibe de bk: la raíz del repo (BK_WS, para llamar a sus lib/), la sesión de tmux
+# de los agentes (BK_SESSION) y DRY=1 si vino --dry-run (si no, 0: un DRY del entorno no se cuela).
+# BK_STATE_DIR ya está exportada arriba.
+plugin_env() { export BK_WS="$WS" BK_SESSION="$SESSION" DRY; }
+
+# Enganche launch-env: antes de crear la ventana de un agente, el comando propio "launch-env" (si existe) recibe
+# BK_LAUNCH_CWD (la carpeta del agente) y BK_LAUNCH_ROLE (su rol) e imprime NOMBRE=valor, uno por línea.
+# Solo pasan las líneas con un nombre de variable válido; si el comando falla, ninguna (y el agente se lanza igual).
+launch_env() {
+  local p out
+  p=$(find_plugin launch-env) || return 0
+  out=$(plugin_env; BK_LAUNCH_CWD="$1" BK_LAUNCH_ROLE="$2" "$p" </dev/null 2>/dev/null) || return 0
+  printf '%s\n' "$out" | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' || true
+}
+
+# Enganche on-empty: "bk" o "bk ws" sin ningún workspace abierto (ninguna sesión bk-* en tmux) corre antes el
+# comando propio "on-empty" (por ejemplo, para reabrir lo que había). No cuando lo llama un restore
+# (BK_RESTORING), ni con --dry-run (solo lo dice). Su código de salida no importa.
+on_empty() {
+  local p
+  [ -z "${BK_RESTORING:-}" ] || return 0
+  p=$(find_plugin on-empty) || return 0
+  if [ "$DRY" -ne 1 ]; then need_tmux; fi
+  local ses; ses=$(tmux list-sessions -F '#{session_name}' 2>/dev/null || true)
+  case $'\n'"$ses" in *$'\n'bk-*) return 0 ;; esac
+  if [ "$DRY" -eq 1 ]; then info "(dry-run: sin workspaces abiertos, correría $p)"; return 0; fi
+  (plugin_env; "$p") || true
+}
+
+plugins_help() {
+  local l; l=$(list_plugins)
+  printf '\nComandos propios (bk-* del PATH y ${BK_PLUGINS:-~/.config/bk/plugins}/*; cómo escribir uno: README):\n'
+  if [ -n "$l" ]; then printf '%s\n' "$l"; else printf '  (ninguno)\n'; fi
+}
+
+# Los comandos de bk: los nombres del case principal de abajo (un comando propio con ese nombre nunca corre)
+builtin_cmds() {
+  awk '/^case "\$\{1:-\}" in/ {on=1; next} on && /^esac/ {exit}
+       on && match($0, /^  [-a-z_|"]+\)/) { s = substr($0, 3, RLENGTH - 3); gsub(/"/, "", s)
+                                         n = split(s, a, "|"); for (i = 1; i <= n; i++) if (a[i] != "") print a[i] }' \
+    "$WS/bin/bk"
+}
+
+# "Comandos propios" de bk help: los que encuentra find_plugin (bk-* del PATH y $BK_PLUGINS/*), uno por nombre,
+# sin los que tapa un comando de bk, con la primera línea "# bk <nombre>…" de sus primeras 5 como descripción.
+list_plugins() {
+  local dir="${BK_PLUGINS:-$HOME/.config/bk/plugins}" d f n p desc names=() builtins
+  builtins=$(builtin_cmds)
+  local IFS=:
+  for d in $PATH; do
+    [ -n "$d" ] || continue
+    for f in "$d"/bk-*; do [ -e "$f" ] && names+=("${f##*/bk-}"); done
+  done
+  unset IFS
+  for f in "$dir"/*; do [ -e "$f" ] && names+=("${f##*/}"); done
+  [ ${#names[@]} -gt 0 ] || return 0
+  printf '%s\n' "${names[@]}" | LC_ALL=C sort -u | while IFS= read -r n; do
+    case $'\n'"$builtins"$'\n' in *$'\n'"$n"$'\n'*) continue ;; esac
+    p=$(find_plugin "$n") || continue
+    # Sin secuencias de control: la descripción sale del archivo de otro
+    desc=$(head -n 5 "$p" 2>/dev/null | LC_ALL=C tr -d '\000-\010\013-\037\177' \
+           | awk -v n="$n" 'index($0, "# bk " n) == 1 { r = substr($0, length("# bk " n) + 1)
+                               if (r == "" || r ~ /^[ :]/) { sub(/^[ :]+/, "", r); print r; exit } }')
+    printf '  %-16s %s\n' "$n" "$desc"
+  done
+}
+
 # ---------- main ----------
 ARGS=()
 while [ $# -gt 0 ]; do
@@ -1546,7 +1624,7 @@ case "${1:-}" in
                exec python3 "$WS/lib/learn.py" "$@" ;;
   lessons)     lessons ;;
   metrics)     shift; need_vault >/dev/null || exit 1; exec python3 "$WS/lib/metrics.py" "$@" ;;
-  ""|ws)       shift || true; workspace "${1:-}" ;;
+  ""|ws)       shift || true; on_empty; workspace "${1:-}" ;;
   open)        shift; cmd_open "${1:-}" ;;
   rerun)       shift; cmd_rerun "$@" ;;
   _prs)        cmd_prs ;;
@@ -1575,10 +1653,8 @@ case "${1:-}" in
   dash)        shift; exec python3 "$WS/lib/dash.py" "$@" ;;
   customize)   exec python3 "$WS/lib/customize.py" ;;
   s|sessions)  exec python3 "$WS/lib/sessions.py" ;;
-  -h|--help|help) usage ;;
-  *) plugin=$(find_plugin "$1") || { usage >&2; exit 2; }
-     # Lo que el comando propio necesita de bk: la raíz del repo (BK_WS, para llamar a sus lib/), la sesión de
-     # tmux de los agentes (BK_SESSION) y DRY=1 si vino --dry-run (si no, 0: un DRY del entorno no se cuela)
-     export BK_WS="$WS" BK_SESSION="$SESSION" DRY
+  -h|--help|help) usage; plugins_help ;;
+  *) plugin=$(find_plugin "$1") || { { usage; plugins_help; } >&2; exit 2; }
+     plugin_env
      shift; exec "$plugin" "$@" ;;
 esac

@@ -244,12 +244,8 @@ bk help            # todo lo demás
   `alt+,` (el header arriba o abajo) se guarda en `~/.config/bk/ui.json`.
 - El riel se redibuja cada segundo y solo si algo cambió; con su workspace oculto no arma nada y mira cada 3 s si
   volvió a estar a la vista.
-- Comandos propios, como en git: si `bk` no conoce `bk foo`, corre `bk-foo` del `PATH` o
-  `${BK_PLUGINS:-~/.config/bk/plugins}/foo` (ejecutable) con el resto de los argumentos y, en el entorno, `BK_WS` (la
-  carpeta de bk, para usar sus `lib/`), `BK_SESSION` (la sesión de tmux de los agentes, `agents` si no la cambiaste) y
-  `DRY=1` si vino `--dry-run` (`DRY=0` si no: el comando decide qué no hacer). Sirve para sumar comandos
-  desde otro repo sin tocar este. Los comandos de bk tienen prioridad, y el nombre solo puede tener letras,
-  números, `-` y `_`.
+- Comandos propios (`bk foo` que bk no conoce) y enganches para sumar lo tuyo desde otro repo: ver
+  [Comandos propios](#comandos-propios).
 - Las proporciones salen de `lib/layout.conf` (tira, riel y cuánto no cede el chat). Al cambiar el tamaño de la
   ventana (el hook `window-resized` de `tmux/bk.conf`) el riel se achica para dejarle al chat 80 columnas y, si
   no entra, el chat pasa a pantalla completa con el zoom de tmux hasta que vuelve a haber lugar; un zoom hecho a
@@ -265,6 +261,62 @@ bk help            # todo lo demás
   con confirmación, un workspace entero (no el tuyo). Un estado cuyo pane de tmux ya no existe se borra y la
   conversación pasa a recientes.
 - Los costos son el **equivalente en API** de los tokens (con una suscripción no se cobra así).
+
+## Comandos propios
+
+Como en git: si `bk` no conoce `bk foo`, corre `bk-foo` del `PATH` o `${BK_PLUGINS:-~/.config/bk/plugins}/foo`
+(el primero que encuentre, y tiene que ser ejecutable) con el resto de los argumentos. Sirve para sumar comandos
+desde otro repo sin tocar este. Los comandos de bk tienen prioridad (un `bk-ls` nunca corre), y el nombre solo
+puede tener letras, números, `-` y `_`.
+
+Uno mínimo:
+
+```sh
+#!/bin/sh
+# bk hola [nombre]: saluda y cuenta cuántos agentes hay
+[ "$DRY" = 1 ] && { echo "(dry-run: saludaría)"; exit 0; }
+n=$(tmux list-windows -t "$BK_SESSION" -F x 2>/dev/null | grep -c .)
+echo "hola ${1:-vos}: $n agentes"
+```
+
+- Lo que recibe en el entorno: `BK_WS` (la carpeta de bk, para usar sus `lib/`), `BK_SESSION` (la sesión de tmux de
+  los agentes, `agents` si no la cambiaste), `BK_STATE_DIR` (la carpeta del estado de los agentes) y `DRY=1` si vino
+  `--dry-run` (`DRY=0` si no: el comando decide qué no hacer). Su código de salida es el de `bk`.
+- `bk help` termina con **Comandos propios**: los que encuentra, uno por nombre (sin los que tapa un comando de bk)
+  y, como descripción, la primera línea de sus primeras 5 que empiece con `# bk <nombre>` (en el ejemplo:
+  `[nombre]: saluda y cuenta cuántos agentes hay`). Sin esa línea sale solo el nombre.
+
+Enganches: bk corre solo algunos comandos propios con nombre fijo, si existen.
+
+- **`on-empty`**: `bk` o `bk ws` sin ningún workspace abierto (ninguna sesión de tmux que empiece con `bk-`) lo corre
+  antes de abrir el workspace; por ejemplo, para reabrir lo que tenías antes de reiniciar. Su código de salida no
+  importa: el workspace se abre igual. No corre si `BK_RESTORING` tiene algo (lo pone tu restore mientras reabre,
+  para no entrar en un círculo) ni con `--dry-run` (ahí bk solo dice que lo correría).
+- **`launch-env`**: antes de crear la ventana de un agente, bk lo corre con `BK_LAUNCH_CWD` (la carpeta del agente) y
+  `BK_LAUNCH_ROLE` (su rol) y pasa a la ventana, como variables de entorno, cada línea de su salida con la forma
+  `NOMBRE=valor` (el nombre: letras, números y `_`, sin empezar con número). Las demás líneas y lo que diga por
+  stderr se ignoran; si sale con error, el agente se lanza sin esas variables. Las de bk (`BARRILETE_ROLE`, la
+  cuenta, `BK_TASK_DIR`) ganan si se repiten. Con `--dry-run` no corre.
+
+  ```sh
+  #!/bin/sh
+  # bk launch-env: el gh de un bot para los reviewers
+  [ "$BK_LAUNCH_ROLE" = reviewer ] && echo "GH_CONFIG_DIR=$HOME/.cache/bk/bot/gh"
+  exit 0
+  ```
+
+  Si `GH_CONFIG_DIR` está dentro de `${BK_CACHE_DIR:-~/.cache/bk}/bot/`, bk lo saca (y `GH_TOKEN`) al arrancar: un
+  chat que heredó el entorno de un agente vuelve a usar tu gh, no el del bot.
+- **`palette.d`**: la paleta (`alt+k`), después de sus entradas, suma las de
+  `${BK_CONFIG_DIR:-~/.config/bk}/palette.d/*.tsv`, los archivos en orden alfabético. Una por línea, separada con
+  tabs: `grupo`, `etiqueta`, `comando` (lo que va después de `bk`), el argumento que pide (vacío si no pide nada) y el
+  tipo: `run` o `show` (deja la salida en pantalla hasta una tecla) o `view` (reemplaza a la paleta). Las líneas
+  vacías, las que empiezan con `#` y las que no tienen esos 5 campos (o un tipo que no es uno de esos) no cuentan.
+
+  ```
+  # grupo	etiqueta	comando	argumento	tipo
+  Mías	Saludar	hola	nombre	show
+  ```
 
 ## Tests
 
