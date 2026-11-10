@@ -18,7 +18,7 @@ SHELLS = {"zsh", "bash", "sh", "fish", "-zsh", "login"}
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 
 RST, BOLD, DIM = "\033[0m", "\033[1m", "\033[2m"
-MAUVE, GREEN, YELLOW, RED, BLUE, GRAY = (f"\033[38;5;{c}m" for c in (183, 114, 222, 210, 111, 245))
+MAUVE, GREEN, YELLOW, RED, BLUE, GRAY = G.ROSE, G.GREEN, G.AMBER, G.RED, G.IRIS, G.MUTED
 STATE_STYLE = {"working": ("● trabajando", YELLOW), "waiting": ("● te espera", RED),
                "background": ("◐ en 2º plano", YELLOW),
                "done": ("✓ listo", GREEN), "idle": ("· libre", GRAY)}

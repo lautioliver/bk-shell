@@ -15,6 +15,7 @@ from datetime import date, datetime, timedelta
 HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, HERE)
 from usage import cost, project_name  # precios y nombre de proyecto: una sola fuente
+import gentle as G  # noqa: E402
 
 PROJECTS = os.path.expanduser("~/.claude/projects")
 CACHE = os.path.expanduser("~/.cache/barrilete/stats.json")
@@ -168,12 +169,8 @@ MONTHS = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", 
 def ui(scr, st, project):
     curses.curs_set(0)
     curses.use_default_colors()
-    shades = [237, 96, 132, 175, 218]  # de "nada" a "mucho", en rosas
-    for i, c in enumerate(shades, 1):
-        curses.init_pair(i, c, -1)
-    for k, v in {10: 218, 11: 182, 12: 244, 13: 252, 14: 222}.items():
-        curses.init_pair(k, v, -1)
-    ROSE, PETAL, MUTED, TEXT, AMBER = (curses.color_pair(i) for i in (10, 11, 12, 13, 14))
+    A = G.curses_attrs(shades=5)  # shade0..4: de "nada" a "mucho", de tint a rose
+    ROSE, PETAL, MUTED, TEXT, AMBER = (A[k] for k in ("rose", "petal", "muted", "text", "amber"))
     tabs, tab = ["Overview", "Models", "Session"], 0
     s = summary(st, project)
     while True:
@@ -210,11 +207,11 @@ def ui(scr, st, project):
                     lvl = 0 if tk == 0 else min(4, 1 + int(3 * tk / max(hi, 1)))
                     ch = "·" if lvl == 0 else "█"
                     if y + 1 + dow < H - 1 and 8 + 2 * w < W - 1:
-                        scr.addnstr(y + 1 + dow, 8 + 2 * w, ch, 1, curses.color_pair(lvl + 1))
+                        scr.addnstr(y + 1 + dow, 8 + 2 * w, ch, 1, A[f"shade{lvl}"])
             y += 9
             scr.addnstr(y, 8, "Menos ", W - 9, MUTED)
             for i in range(1, 5):
-                scr.addnstr(y, 14 + 2 * (i - 1), "█", 1, curses.color_pair(i + 1))
+                scr.addnstr(y, 14 + 2 * (i - 1), "█", 1, A[f"shade{i}"])
             scr.addnstr(y, 23, "Más", W - 24, MUTED)
             y += 2
             t = s["tokens"]

@@ -9,6 +9,9 @@ Teclas: ↑↓/jk moverse · / buscar · enter abrir · x cerrar ventana · q/es
 """
 import curses, glob, json, os, re, subprocess, sys, time
 
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import gentle as G  # noqa: E402  (paleta del tema, una sola para todas las vistas)
+
 PROJECTS = os.path.expanduser("~/.claude/projects")
 STATE = os.environ.get("BK_STATE_DIR", os.path.expanduser("~/.cache/bk/agents"))
 CACHE = os.path.expanduser("~/.cache/barrilete/sessions.json")
@@ -210,9 +213,8 @@ def open_row(r):
 def ui(scr):
     curses.curs_set(0)
     curses.use_default_colors()
-    for i, c in enumerate([183, 114, 222, 210, 111, 245], 1):
-        curses.init_pair(i, c, -1)
-    MAUVE, GREEN, YELLOW, RED, BLUE, GRAY = (curses.color_pair(i) for i in range(1, 7))
+    A = G.curses_attrs()
+    MAUVE, GREEN, YELLOW, RED, BLUE, GRAY = (A[k] for k in ("rose", "green", "amber", "red", "iris", "muted"))
     st_color = {"background": YELLOW, "working": YELLOW, "waiting": RED, "done": GREEN, "idle": GRAY, "ended": GRAY}
     opened, recent = load()
     query, typing, sel, top, msg = "", False, 0, 0, ""

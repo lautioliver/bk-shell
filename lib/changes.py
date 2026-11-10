@@ -8,6 +8,9 @@ Teclas: j/k elegir · ctrl+j/k o J/K scroll del diff · F diff a todo el ancho �
 """
 import curses, glob, json, os, subprocess, sys
 
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import gentle as G  # noqa: E402  (paleta del tema, una sola para todas las vistas)
+
 SESSION = os.environ.get("BK_SESSION", "agents")
 STATE = os.environ.get("BK_STATE_DIR", os.path.expanduser("~/.cache/bk/agents"))
 
@@ -78,10 +81,8 @@ def diff(item):
 def ui(scr):
     curses.curs_set(0)
     curses.use_default_colors()
-    pal = {1: 211, 2: 182, 3: 114, 4: 210, 5: 222, 6: 244, 7: 147}
-    for k, v in pal.items():
-        curses.init_pair(k, v, -1)
-    ROSE, PETAL, GREEN, RED, AMBER, MUTED, IRIS = (curses.color_pair(i) for i in range(1, 8))
+    A = G.curses_attrs()
+    ROSE, PETAL, GREEN, RED, AMBER, MUTED, IRIS = (A[k] for k in ("rose", "petal", "green", "red", "amber", "muted", "iris"))
     items = load()
     files = [i for i, it in enumerate(items) if it[0] == "file"]
     sel, scroll, full, cache = 0, 0, False, {}

@@ -62,6 +62,52 @@ GREEN, RED, TEXT, MUTED, FRAME = fg(P["green"]), fg(P["red"]), fg(P["text"]), fg
 TINT = bg(P["tint"])
 
 
+_LEVELS = (0, 95, 135, 175, 215, 255)
+
+
+def to256(h):
+    """Color 256 más cercano a un hex (cubo 6x6x6 o rampa de grises), para curses."""
+    h = h.lstrip("#")
+    r, g_, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
+    near = lambda v: min(range(6), key=lambda i: abs(_LEVELS[i] - v))
+    ci = [near(r), near(g_), near(b)]
+    cube = 16 + 36 * ci[0] + 6 * ci[1] + ci[2]
+    cd = sum((_LEVELS[i] - v) ** 2 for i, v in zip(ci, (r, g_, b)))
+    gv = min(23, max(0, round((((r + g_ + b) / 3) - 8) / 10)))
+    gd = sum((8 + 10 * gv - v) ** 2 for v in (r, g_, b))
+    return 232 + gv if gd < cd else cube
+
+
+def ramp(n, lo="tint", hi="rose"):
+    """n hex de `lo` a `hi` de la paleta del tema (para mapas de calor)."""
+    a, b = P[lo], P[hi]
+    ch = lambda s, i: int(s[i:i + 2], 16)
+    return ["%02X%02X%02X" % tuple(round(ch(a, i) + (ch(b, i) - ch(a, i)) * k / max(1, n - 1)) for i in (0, 2, 4))
+            for k in range(n)]
+
+
+CURSES_NAMES = ("rose", "petal", "iris", "amber", "green", "red", "text", "muted")
+
+
+def curses_attrs(base=20, shades=0):
+    """Inicia pares de curses con la paleta del tema y devuelve {nombre: atributo}.
+
+    Las vistas curses piden los colores acá en vez de tener sus números 256: así siguen el tema
+    día/noche igual que el riel. Con `shades`, suma "shade0".."shadeN" (tint → rose, para mapas de calor).
+    """
+    import curses
+    out, n = {}, base
+    for name in CURSES_NAMES:
+        curses.init_pair(n, to256(P[name]), -1)
+        out[name] = curses.color_pair(n)
+        n += 1
+    for i, h in enumerate(ramp(shades)):
+        curses.init_pair(n, to256(h), -1)
+        out[f"shade{i}"] = curses.color_pair(n)
+        n += 1
+    return out
+
+
 def cw(ch):
     if unicodedata.combining(ch):
         return 0
