@@ -65,7 +65,7 @@ quedó sin commitear, en una sola sesión de tmux.
   subagente vivo cuya descripción la contiene.
 - **Monitor**: `bk monitor` es una pantalla para dejar abierta en otro monitor. Arriba, **Te esperan**: preguntas,
   permisos y reviewers propuestos, con el comando para contestar (`bk say …`, `bk approve …`). Después los agentes y
-  los chats en tablas separadas (estado en palabras, herramienta, hace cuánto, tarea, costo de hoy, subagentes), las
+  los chats en tablas separadas (estado en palabras, herramienta, hace cuánto, tarea, contexto, costo de hoy, subagentes), las
   **tareas** (estado, cómo cerró, último evento, `bk say` en cola) y los desvíos en vivo, agrupados (×N): bloqueos de hooks y barandas,
   `red.sh`/`verify.py` que fallan, correcciones e interrupciones tuyas, permisos rechazados, agentes trabados, el mismo
   error repetido, force push, otra credencial, «CI en verde» con el CI rojo y decisiones que te atribuyen. Los graves
@@ -88,6 +88,10 @@ quedó sin commitear, en una sola sesión de tmux.
   y otra sesión puede usar otra al mismo tiempo. Las conversaciones son las mismas (`/resume` y `alt+s` ven todas);
   `--relaunch` también cambia el chat principal, retomando su conversación. `bk run … --account X` solo para un
   lanzamiento; `bk account use default` vuelve a la de siempre. El riel muestra la cuenta en Status.
+- **Contexto a la vista**: cada llamada de una sesión vuelve a leer (y a pagar) todo su contexto. Desde 200k
+  (ámbar) y 400k (rojo) la tira marca la sesión con `▪` (el número, en el tooltip), el riel muestra el de cada agente
+  y el de este chat con la sugerencia de `/clear` o un chat nuevo, y `bk monitor` lo tiene en la columna CTX.
+  Opcional: `lib/context_hook.py` se lo dice al agente (ver *Aviso de contexto*).
 - **Stats**: mapa de actividad, modelo favorito, rachas y costo equivalente en API de todo tu historial de Claude Code.
 
 ## Requisitos
@@ -111,6 +115,24 @@ Clona en `~/.bk-shell`, enlaza `~/.local/bin/bk` y **te pregunta** antes de:
 **macOS:** los atajos `alt+…` necesitan que Option mande Alt.
 Ghostty: `macos-option-as-alt = left` · iTerm2: Profiles → Keys → Left Option key: Esc+ ·
 Terminal: Ajustes → Perfiles → Teclado → "Usar Opción como tecla Meta".
+
+### Aviso de contexto (opcional)
+
+`lib/context_hook.py` es un hook de Claude Code que, al cruzar 200k de contexto, le pide al agente que cuando
+termine recomiende `/clear` o un chat nuevo; a 400k, que cierre en un punto estable y deje un resumen para seguir
+en otra sesión (después avisa cada +100k). Los agentes de bk (con `BK_TASK_DIR`) cierran con su `bk done`. No
+avisa dentro de subagentes, nunca bloquea y guarda lo último avisado en `~/.cache/bk/context_hook/`. El instalador
+no lo registra: si lo querés, sumalo a mano en `~/.claude/settings.json`, en los eventos `UserPromptSubmit` y
+`PostToolUse`:
+
+```json
+{ "hooks": {
+  "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "python3 ~/.bk-shell/lib/context_hook.py" }] }],
+  "PostToolUse":      [{ "hooks": [{ "type": "command", "command": "python3 ~/.bk-shell/lib/context_hook.py" }] }]
+} }
+```
+
+(si ya tenés esos eventos, agregá el `{"type": "command", …}` a su lista en vez de reemplazarla).
 
 Actualizar: volvé a correr el instalador. Desinstalar: `bash ~/.bk-shell/install.sh --uninstall`.
 
@@ -162,6 +184,10 @@ bk help            # todo lo demás
   `${BK_PLUGINS:-~/.config/bk/plugins}/foo` (ejecutable) con el resto de los argumentos. Sirve para sumar comandos
   desde otro repo sin tocar este. Los comandos de bk tienen prioridad, y el nombre solo puede tener letras,
   números, `-` y `_`.
+- Las proporciones salen de `lib/layout.conf` (tira, riel y cuánto no cede el chat). Al cambiar el tamaño de la
+  ventana (el hook `window-resized` de `tmux/bk.conf`) el riel se achica para dejarle al chat 80 columnas y, si
+  no entra, el chat pasa a pantalla completa con el zoom de tmux hasta que vuelve a haber lugar; un zoom hecho a
+  mano no se toca.
 - Los costos son el **equivalente en API** de los tokens (con una suscripción no se cobra así).
 
 ## Tests

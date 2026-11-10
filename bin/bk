@@ -5,7 +5,7 @@
 set -euo pipefail
 
 WS="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
-# Proporciones del workspace (SIDE_W, RAIL_PCT, RAIL_MIN): lib/layout.conf, la misma fuente que lib/gentle.py
+# Proporciones del workspace (SIDE_W, RAIL_PCT, RAIL_MIN, LAYOUT_CHAT, LAYOUT_RAIL): lib/layout.conf, la misma fuente que lib/gentle.py
 # shellcheck source=lib/layout.conf
 . "$WS/lib/layout.conf"
 SESSION="${BK_SESSION:-agents}"
@@ -50,7 +50,8 @@ uso: bk [comando] [--dry-run]
   go <agente>       saltar a un agente. <agente>: la ventana (i42, pr57), un número (#240) o una palabra del título
   changes           lo que los agentes dejaron sin commitear, con diff (alt+g)
   palette | k       todos los comandos con búsqueda (alt+k)
-  monitor           pantalla para el otro monitor: qué te espera, agentes, tareas, costo y desvíos en vivo (los graves suenan)
+  monitor           pantalla para el otro monitor: qué te espera, agentes, tareas, contexto (CTX), costo y desvíos en
+                    vivo (los graves suenan)
                     (c o bk monitor --clear limpian los desvíos: lo anterior no vuelve aunque relea los transcripts)
   stats             estadísticas de uso: actividad, modelos, rachas, costo (alt+u)
   customize         estilo del workspace: header arriba o abajo (alt+,)
@@ -82,6 +83,8 @@ uso: bk [comando] [--dry-run]
   tokens            tokens del día y costo equivalente en API, por modelo y proyecto
 
 Los comandos de agentes se corren dentro de un proyecto Barrilete.
+Contexto alto (ámbar desde 200k, rojo desde 400k): ▪ en la tira, en el riel y en la columna CTX de bk monitor;
+lib/context_hook.py se lo avisa al agente (registrarlo a mano: ver el README).
 Comandos propios: si bk no conoce "bk foo", corre bk-foo del PATH o ${BK_PLUGINS:-~/.config/bk/plugins}/foo.
 EOF
 }
@@ -678,7 +681,8 @@ workspace() {
     tmux select-pane -t "$chat"
     # La sesión nace con el tamaño de la terminal que la crea: reacomodar al conectarse/redimensionar
     tmux set-hook -t "$WS_SESSION" client-attached "run-shell -b 'bk _layout #{session_name}'"
-    tmux set-hook -t "$WS_SESSION" client-resized "run-shell -b 'bk _layout #{session_name}'"
+    # (el cambio de tamaño de la ventana lo agarra el hook global window-resized de tmux/bk.conf: también al
+    # cambiar de sesión, que client-resized no ve)
   fi
   if [ -n "${TMUX:-}" ]; then tmux switch-client ${BK_CLIENT:+-c "$BK_CLIENT"} -t "$WS_SESSION"; else exec tmux attach -t "$WS_SESSION"; fi
 }
@@ -961,17 +965,55 @@ ws_footer() {
 
 # Proporciones (lib/layout.conf): riel derecho RAIL_PCT % del ancho, mínimo RAIL_MIN columnas; tira de SIDE_W
 ws_layout() {
+  # Al cambiar el tamaño (zoom de la terminal, otra pantalla): el chat nunca queda con menos de LAYOUT_CHAT
+  # columnas; el riel se achica para dejarle lugar y, si ni así entra (menos de LAYOUT_RAIL), el chat pasa a
+  # pantalla completa con el zoom de tmux (no se cierra nada). Ese zoom lo marca @bk_autozoom y se deshace solo
+  # al volver a haber lugar; un zoom hecho a mano no se toca.
   set +euo pipefail
-  local t="${1:-$WS_SESSION}:main" W rail w side
+  local ses="${1:-$WS_SESSION}"
+  case "$ses" in bk*) ;; *) return 0 ;; esac            # el hook es global: solo los workspaces
+  # De a uno por sesión: cada paso del zoom dispara el hook, y dos a la vez podían prender y apagar el zoom
+  # del chat en el mismo momento. mkdir es atómico; un lock de más de 5 s es de uno que murió.
+  local lock="${TMPDIR:-/tmp}/bk-layout-$ses.lock" i got=0 born
+  for i in $(seq 50); do
+    mkdir "$lock" 2>/dev/null && { got=1; break; }
+    born=$(mtime "$lock")
+    [ -n "$born" ] && [ $(( $(date +%s) - born )) -gt 5 ] && rmdir "$lock" 2>/dev/null
+    sleep 0.1
+  done
+  [ "$got" = 1 ] || return 0                           # no se pudo: el que tiene el lock ya acomoda
+  trap 'rmdir "$lock" 2>/dev/null; trap - RETURN' RETURN
+  local t="$ses:main" W rail w side chat max zoomed auto
   W=$(tmux display-message -p -t "$t" '#{window_width}')
   [ -n "$W" ] || return 0
   rail=$(tmux list-panes -t "$t" -F '#{pane_id} #{pane_start_command}' | awk '/bk rail/{print $1; exit}')
   side=$(tmux list-panes -t "$t" -F '#{pane_id} #{pane_start_command}' | awk '/bk sidebar/{print $1; exit}')
+  chat=$(tmux list-panes -t "$t" -F '#{pane_id} #{pane_start_command}' | awk '!/bk rail|bk sidebar/{print $1; exit}')
+  zoomed=$(tmux display-message -p -t "$t" '#{window_zoomed_flag}')
+  auto=$(tmux show-options -wqv -t "$t" @bk_autozoom)
+  [ "$zoomed" = 1 ] && [ -z "$auto" ] && return 0      # zoom a mano: respetarlo
   w=$((W * RAIL_PCT / 100)); [ "$w" -lt "$RAIL_MIN" ] && w=$RAIL_MIN
+  local sw=0; [ -n "$side" ] && sw=$SIDE_W
+  max=$((W - LAYOUT_CHAT - 2 - sw))                    # 2 bordes, y la tira si está
+  [ "$w" -gt "$max" ] && w=$max
+  if [ -n "$rail" ] && [ "$w" -lt "$LAYOUT_RAIL" ]; then
+    if [ "$zoomed" != 1 ] && [ -n "$chat" ]; then
+      tmux set-option -w -t "$t" @bk_autozoom 1
+      tmux resize-pane -Z -t "$chat"
+    fi
+    return 0
+  fi
+  if [ "$zoomed" = 1 ]; then                           # zoom nuestro y ya hay lugar: deshacerlo
+    tmux set-option -wu -t "$t" @bk_autozoom
+    tmux resize-pane -Z -t "${chat:-$t}"
+  fi
   [ -n "$rail" ] && tmux resize-pane -t "$rail" -x "$w"
   [ -n "$side" ] && tmux resize-pane -t "$side" -x "$SIDE_W"
   return 0
 }
+
+# Segundos desde epoch de la última modificación (stat de GNU o de BSD); vacío si no existe
+mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
 
 stop() {
   need_tmux

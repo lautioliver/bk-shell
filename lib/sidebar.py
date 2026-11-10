@@ -4,6 +4,8 @@
     1 ●     arriba: los workspaces (sesiones bk-*), en orden de creación; alt+1…9 salta a cada uno
     2 ○     abajo: los agentes (ventanas de la sesión "agents")
     ─       ● trabajando · ● rojo te espera · ○ libre/listo · · sin claude
+    1 ●▪    ▪ al lado: la sesión ya carga mucho contexto (ámbar desde 200k, rojo desde 400k; cada llamada lo
+            vuelve a leer y a pagar). El número exacto, en el tooltip.
     └⠋      debajo de un chat o agente: sus subagentes vivos (herramienta Agent); clic = su sesión en un popup
     1 ●     el actual va resaltado. Clic en una fila para ir ahí; con el mouse encima, su nombre
             (tipo N · proyecto · feature) aparece en la barra de tmux, como un tooltip.
@@ -13,6 +15,7 @@ import curses, glob, json, os, re, shlex, subprocess, sys, time
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import agents as AG  # noqa: E402  (nombre de los chats: bk name, /rename o el título de Claude)
 import gentle as G  # noqa: E402
+import usage as U   # noqa: E402  (contexto de cada sesión: context_of, los umbrales y el formato)
 
 TIP_MS = 2500           # cuánto queda el nombre en la barra de tmux al pasar el mouse
 SUB_TTL = 600           # un subagente sin escribir su transcript en 10 min ya no cuenta como vivo
@@ -165,7 +168,7 @@ def items():
     out = []
     for name in workspaces():
         # Estado del chat del workspace (el pane que corre claude en la ventana main)
-        state, subs, info = "none", [], None
+        state, subs, info, ctx = "none", [], None, None
         for l in sh("tmux", "list-panes", "-t", f"{name}:main", "-F",
                     "#{pane_id}\t#{pane_current_command}\t#{pane_dead}\t#{pane_start_command}\t#{pane_title}\t#{pane_current_path}").splitlines():
             pid, cmd, dead, start, title, path = (l.split("\t") + [""] * 6)[:6]
@@ -179,8 +182,9 @@ def items():
             if s != "none":
                 state = s
                 subs = subagents((st.get(pid) or {}).get("_sid"))
-        out.append(("ws", name, name, state, info or (name[3:], "")))
-        out += [("sub", d, "sub:" + j, "background" if bg else "working", ("", d)) for d, bg, j in subs]
+                ctx = U.context_of((st.get(pid) or {}).get("_sid"))
+        out.append(("ws", name, name, state, info or (name[3:], ""), ctx))
+        out += [("sub", d, "sub:" + j, "background" if bg else "working", ("", d), None) for d, bg, j in subs]
     for l in sh("tmux", "list-panes", "-s", "-t", AGENTS, "-F",
                 "#{window_name}\t#{pane_id}\t#{pane_current_command}\t#{pane_dead}\t#{@bk_ws}\t#{pane_title}\t#{pane_current_path}").splitlines():
         win, pid, cmd, dead, ws, title, path = (l.split("\t") + [""] * 7)[:7]
@@ -188,10 +192,11 @@ def items():
             continue
         state = pane_state(st, pid, cmd, dead)
         ref = (st.get(pid) or {}).get("ref") or ""
+        ctx = U.context_of((st.get(pid) or {}).get("_sid")) if state != "none" else None
         out.append(("ag", win, f"{AGENTS}:{win}", state,
-                    (f"{project_name(path)} · {win}", " ".join(x for x in (ref, feature(title, path)) if x))))
+                    (f"{project_name(path)} · {win}", " ".join(x for x in (ref, feature(title, path)) if x)), ctx))
         if state != "none":
-            out += [("sub", d, "sub:" + j, "background" if bg else "working", ("", d))
+            out += [("sub", d, "sub:" + j, "background" if bg else "working", ("", d), None)
                     for d, bg, j in subagents((st.get(pid) or {}).get("_sid"))]
     return out
 
@@ -239,6 +244,19 @@ def dot_for(state, tick, attrs):
     return g, attrs[color]
 
 
+def ctx_mark(ctx):
+    """El ▪ de contexto alto de una fila: (glifo, "warn" | "high"), o None por debajo de 200k o sin dato."""
+    lvl = U.ctx_level(ctx)
+    return ("▪", lvl) if lvl else None
+
+
+def row_tip(kind, num, info, ctx=None):
+    """El tooltip de una fila de workspace o agente: tipo N · proyecto · feature · contexto."""
+    proj, feat = info
+    return (f"{'workspace' if kind == 'ws' else 'agente'} {num} · {proj}" + (f" · {feat}" if feat else "")
+            + (f" · {U.human_ctx(ctx)} de contexto" if ctx else ""))
+
+
 def ui(scr):
     curses.curs_set(0)
     curses.use_default_colors()
@@ -249,8 +267,9 @@ def ui(scr):
     me = os.environ.get("TMUX_PANE", "")
     client = sh("tmux", "display-message", "-p", "-t", me, "#{client_name}").strip() if me else ""
     hover_y, hover_t, tips = -1, 0.0, {}
-    A = G.curses_attrs()   # los mismos colores que el riel, de día y de noche
+    A = G.curses_attrs(ids=True)   # los mismos colores que el riel, de día y de noche (+ warn/high del contexto)
     MUTED, ROSE, IRIS = (A[k] for k in ("muted", "rose", "iris"))
+    CTX = {"warn": A["warn"] | curses.A_BOLD, "high": A["high"] | curses.A_BOLD}
 
     def tooltip(text):
         """El nombre de la fila, como tooltip en la barra de tmux (la tira no cambia de ancho)."""
@@ -271,7 +290,7 @@ def ui(scr):
         tips.clear()
         if hover_y >= 0 and time.time() - hover_t > TIP_MS / 1000:   # se fue el mouse: sacar el resaltado
             hover_y = -1
-        for kind, label, target, state, info in cache:
+        for kind, label, target, state, info, ctx in cache:
             if kind == "ag" and not sep:
                 if y < H - 1:
                     scr.addnstr(y, 1, "─" * max(1, W - 2), W - 2, MUTED)
@@ -297,8 +316,10 @@ def ui(scr):
             numattr = (ROSE | curses.A_BOLD | curses.A_REVERSE) if here else (IRIS if kind == "ag" else 0)
             scr.addnstr(y, 1, f"{num:>1}", 2, numattr | hl)
             scr.addnstr(y, 3, dot, 1, col)
-            proj, feat = info
-            tips[y] = f"{'workspace' if kind == 'ws' else 'agente'} {num} · {proj}" + (f" · {feat}" if feat else "")
+            mark = ctx_mark(ctx)
+            if mark and 4 < W - 1:
+                scr.addnstr(y, 4, mark[0], 1, CTX[mark[1]])
+            tips[y] = row_tip(kind, num, info, ctx)
             rowmap[y] = target
             y += 1
         # "+" al pie: Nuevo (chat o workspace), igual que alt+n

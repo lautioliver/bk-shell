@@ -234,8 +234,9 @@ class Proporciones(unittest.TestCase):
             self.assertEqual({G.vlen(l) for l in filas}, {W}, W)
 
     def test_layout_conf_lo_lee_gentle(self):
-        self.assertEqual((G.SIDE_W, G.RAIL_PCT, G.RAIL_MIN), (5, 34, 46))
-        self.assertEqual(set(G.layout()), {"SIDE_W", "RAIL_PCT", "RAIL_MIN"})
+        self.assertEqual((G.SIDE_W, G.RAIL_PCT, G.RAIL_MIN), (14, 34, 46))
+        self.assertEqual((G.LAYOUT["LAYOUT_CHAT"], G.LAYOUT["LAYOUT_RAIL"]), (80, 30))
+        self.assertEqual(set(G.layout()), {"SIDE_W", "RAIL_PCT", "RAIL_MIN", "LAYOUT_CHAT", "LAYOUT_RAIL"})
 
     def test_customize_descripcion_al_lado_o_debajo(self):
         import customize as CU
@@ -402,6 +403,52 @@ class Tareas(unittest.TestCase):
         self.assertEqual(AG.task_by_window(), {})
         self.assertEqual(AG.proposals(), [])
 
+
+
+class Contexto(unittest.TestCase):
+    """El contexto de cada sesión (usage.context_of) en el riel y la tira: ámbar desde 200k, rojo desde 400k."""
+
+    def setUp(self):
+        import usage as U
+        ctx = {"s-alto": 450_000, "s-medio": 250_000, "s-bajo": 50_000}
+        for mod, name in ((U, "context_of"), (rail, "usage"), (rail, "roles_profile"), (rail, "session_account")):
+            self.addCleanup(setattr, mod, name, getattr(mod, name))
+        U.context_of = lambda sid=None, path=None: ctx.get(sid)
+        rail.usage = lambda: {}
+        rail.roles_profile = lambda top: "—"
+        rail.session_account = lambda: ""
+        rail._profile["t"] = 0
+        self.cwd = tempfile.mkdtemp()
+
+    def status(self, sid):
+        return STRIP.sub("", "\n".join(rail.card_status(70, self.cwd, [], sid)))
+
+    def test_riel_contexto_de_este_chat(self):
+        self.assertIn("Contexto 250k · /clear o chat nuevo (alt+n)", self.status("s-medio"))
+        self.assertIn("Contexto 50k", self.status("s-bajo"))
+        self.assertNotIn("/clear", self.status("s-bajo"))        # por debajo de 200k: sin sugerencia
+        self.assertNotIn("Contexto", self.status(None))           # sin chat: sin fila
+        self.assertNotIn("Contexto", self.status("s-sin-dato"))
+
+    def test_riel_contexto_por_agente_en_color(self):
+        live = [{"win": "i7", "pane": "%1", "s": {"state": "working", "tool": "-", "ts": 9e9, "_sid": "s-alto"}},
+                {"win": "i8", "pane": "%2", "s": {"state": "working", "tool": "-", "ts": 9e9, "_sid": "s-bajo"}}]
+        rows = rail.card_agents(70, live, [])
+        i7 = next(r for r in rows if "i7" in r)
+        self.assertIn("450k", STRIP.sub("", i7))
+        self.assertIn(G.RED + "450k", i7)
+        self.assertIn(G.MUTED + "50k", next(r for r in rows if "i8" in r))
+        self.assertEqual(rail.ctx_text(None), "")
+        self.assertIn(G.AMBER + "250k", rail.ctx_text(250_000))
+
+    def test_tira_marca_contexto_alto(self):
+        self.assertIsNone(sidebar.ctx_mark(None))
+        self.assertIsNone(sidebar.ctx_mark(199_999))
+        self.assertEqual(sidebar.ctx_mark(200_000), ("▪", "warn"))
+        self.assertEqual(sidebar.ctx_mark(400_000), ("▪", "high"))
+        self.assertEqual(sidebar.row_tip("ws", 2, ("demo", "login"), 412_000),
+                         "workspace 2 · demo · login · 412k de contexto")
+        self.assertEqual(sidebar.row_tip("ag", 1, ("demo · i7", ""), None), "agente 1 · demo · i7")
 
 
 if __name__ == "__main__":

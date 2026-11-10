@@ -26,6 +26,7 @@ w({"type": "assistant", "timestamp": ts, "message": {"model": "claude-sonnet-5-5
    "usage": {"input_tokens": 1000000, "output_tokens": 0}}})
 m = M.Monitor(); m.refresh()
 print("costo", round(m.agents[0]["_cost"], 2))
+print("ctx", m.agents[0].get("_ctx"), M.G.ANSI.sub("", M.ctx_cell(m.agents[0])).strip(), M.ctx_cell(m.agents[0]).startswith(M.RED))
 tu = lambda i, c: {"type": "assistant", "timestamp": ts, "message": {"content": [{"type": "tool_use", "id": f"t{i}", "name": "Bash", "input": {"command": c}}]}}
 tr = lambda i, t: {"type": "user", "timestamp": ts, "message": {"content": [{"type": "tool_result", "tool_use_id": f"t{i}", "is_error": True, "content": t}]}}
 w(tu(1, "git push --force-with-lease origin HEAD"), tu(2, "gh auth login"))
@@ -38,7 +39,13 @@ w(tu(10, "bash red.sh"), tr(10, "red.sh: no hay casos"))
 m.refresh(); m.refresh()
 for e in m.events:
     print("ev", e["type"])
-print("frame", len(M.frame(m, 140, 45, 0, "agents", 0, None)))
+w({"type": "assistant", "timestamp": ts, "isSidechain": True, "message": {"model": "claude-sonnet-5-5", "content": [],
+   "usage": {"input_tokens": 7, "output_tokens": 0}}})
+m.refresh()
+print("ctxside", m.agents[0].get("_ctx"))
+fr = M.frame(m, 140, 45, 0, "agents", 0, None)
+print("frame", len(fr))
+print("ctxcol", int(any("CTX" in M.G.ANSI.sub("", l) for l in fr)), int(any("1000k" in M.G.ANSI.sub("", l) for l in fr)))
 PY
 )
 check_eq "$(grep '^costo' <<<"$OUT")" "costo 2.0" "costo de hoy de la sesión (1M tokens de entrada de sonnet 5.5)"
@@ -49,6 +56,9 @@ check_eq "$(grep -c '^ev loop' <<<"$OUT")" 1 "un solo loop (otros errores con Ex
 check_eq "$(grep -cx 'ev stale' <<<"$OUT")" 0 "trabado se avisa una vez, como grave"
 check_eq "$(grep -c '^ev ' <<<"$OUT")" 6 "ni un desvío de más"
 grep -q '^frame [0-9]' <<<"$OUT"; check $? "dibuja un cuadro"
+check_eq "$(grep '^ctx ' <<<"$OUT")" "ctx 1000000 1000k True" "contexto del último turno (CTX), en rojo desde 400k"
+check_eq "$(grep '^ctxside' <<<"$OUT")" "ctxside 1000000" "un turno de subagente (isSidechain) no cambia el contexto"
+check_eq "$(grep '^ctxcol' <<<"$OUT")" "ctxcol 1 1" "la tabla de agentes tiene la columna CTX con el valor"
 # La tecla s alterna el sonido en los dos sentidos (antes no volvía a prenderlo)
 SC="$TMP/sndconf"; mkdir -p "$SC"; echo off > "$SC/sound"
 tmux new-session -d -s mon -x 150 -y 40 "BK_CONFIG_DIR=$SC python3 $ROOT/lib/monitor.py"

@@ -14,7 +14,8 @@ LAYOUT_FILE = os.path.join(os.path.dirname(os.path.realpath(__file__)), "layout.
 
 
 def layout():
-    """Las proporciones de lib/layout.conf (NOMBRE=número; bin/bk lo carga con `source`): SIDE_W, RAIL_PCT, RAIL_MIN."""
+    """Las proporciones de lib/layout.conf (NOMBRE=número; bin/bk lo carga con `source`): SIDE_W, RAIL_PCT, RAIL_MIN,
+    LAYOUT_CHAT y LAYOUT_RAIL."""
     out = {}
     with open(LAYOUT_FILE, encoding="utf-8") as f:
         for l in f:
