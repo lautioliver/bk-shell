@@ -13,7 +13,7 @@ contexto baja (/compact), vuelve a avisar al cruzar de nuevo.
 
 Por debajo de 200k, dentro de un subagente (trae agent_id) o ante cualquier error: no imprime nada y sale 0.
 Nunca bloquea. El contexto sale de usage.context_of (el último turno del transcript), sin otro parser.
-No se registra solo: ver "Aviso de contexto" en el README.
+No se registra solo: install.sh pregunta si lo registra (o a mano: ver "Aviso de contexto" en el README).
 """
 import json
 import os

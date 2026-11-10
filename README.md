@@ -142,7 +142,12 @@ curl -fsSL https://raw.githubusercontent.com/lautioliver/bk-shell/main/install.s
 
 Clona en `~/.bk-shell`, enlaza `~/.local/bin/bk` y **te pregunta** antes de:
 - agregar `source-file ~/.bk-shell/tmux/bk.conf` a tu `tmux.conf` (los atajos; no toca tu prefijo ni tu tema);
-- registrar el hook de estado en `~/.claude/settings.json` (deja una copia en `settings.json.bk-backup`).
+- registrar el hook de estado en `~/.claude/settings.json` (deja una copia en `settings.json.bk-backup`);
+- registrar el aviso de contexto (`lib/context_hook.py`) y la baranda de tmux (`lib/tmux_guard.py`), cada uno con
+  su pregunta (ver abajo).
+
+Sin terminal (CI, un pipe sin tty) no toca nada; `BK_YES=s` contesta que sí a todo. `--uninstall` saca los tres hooks
+de `settings.json` y deja los tuyos.
 
 **macOS:** los atajos `alt+…` necesitan que Option mande Alt.
 Ghostty: `macos-option-as-alt = left` · iTerm2: Profiles → Keys → Left Option key: Esc+ ·
@@ -154,8 +159,8 @@ Terminal: Ajustes → Perfiles → Teclado → "Usar Opción como tecla Meta".
 termine recomiende `/clear` o un chat nuevo; a 400k, que cierre en un punto estable y deje un resumen para seguir
 en otra sesión (después avisa cada +100k). Los agentes de bk (con `BK_TASK_DIR`) cierran con su `bk done`. No
 avisa dentro de subagentes, nunca bloquea y guarda lo último avisado en `~/.cache/bk/context_hook/`. El instalador
-no lo registra: si lo querés, sumalo a mano en `~/.claude/settings.json`, en los eventos `UserPromptSubmit` y
-`PostToolUse`:
+te pregunta si lo registra (en `UserPromptSubmit` y `PostToolUse`); si dijiste que no, volvé a correrlo o sumalo a
+mano en `~/.claude/settings.json`:
 
 ```json
 { "hooks": {
@@ -176,7 +181,8 @@ comando que les sigue: en `env -u TMUX bash tests/run.sh; tmux kill-server` el s
 También frena `pkill`/`killall` de tmux, `kill <pid>` del server y `kill` de lo que da `pgrep`/`pidof`/`grep` de
 tmux (`kill $(pgrep tmux)`, `pgrep tmux | xargs kill`), y pregunta antes de `tmux kill-session` de `agents` o de
 un `bk-…`. Es contra accidentes, no contra quien quiera esquivarlo. El
-instalador no lo registra: si lo querés, sumalo a mano en `~/.claude/settings.json`:
+instalador te pregunta si la registra (en `PreToolUse`, matcher `Bash`); si dijiste que no, volvé a correrlo o
+sumala a mano en `~/.claude/settings.json`:
 
 ```json
 { "hooks": {

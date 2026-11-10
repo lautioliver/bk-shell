@@ -27,10 +27,27 @@ rm -rf "$H/.bk-shell"
 HOME="$H" BK_REPO="$ROOT" BK_YES=s bash "$ROOT/install.sh" </dev/null >/dev/null 2>&1
 check_eq "$(jq '.hooks | keys | length' "$H/.claude/settings.json")" 12 "con BK_YES=s registra el hook en 12 eventos"
 grep -q 'bk-shell/tmux/bk.conf' "$H/.tmux.conf"; check $? "con BK_YES=s carga bk.conf en tmux.conf"
-HOME="$H" bash "$H/.bk-shell/install.sh" --uninstall >/dev/null 2>&1
+HOME="$H" bash "$ROOT/install.sh" --uninstall >/dev/null 2>&1   # el de este árbol, no el clon (que es el último commit)
 check_eq "$(jq -c .hooks "$H/.claude/settings.json")" "{}" "desinstalar saca el hook"
 grep -q 'bk-shell' "$H/.tmux.conf"; [ $? -ne 0 ]; check $? "desinstalar saca bk.conf de tmux.conf"
 [ "$(jq -r .theme "$H/.claude/settings.json")" = dark ]; check $? "no toca el resto de settings.json"
+
+# Aviso de contexto y baranda de tmux: con BK_YES=s los registra (una vez, aunque reinstales) y desinstalar los
+# saca sin tocar un hook ajeno. HOME de prueba con un espacio en la ruta: el comando queda entre comillas.
+H2="$TMP/otro home"; mkdir -p "$H2/.claude"
+echo '{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"ajeno.sh"}]}]}}' >"$H2/.claude/settings.json"
+for _ in 1 2; do HOME="$H2" BK_REPO="$ROOT" BK_YES=s bash "$ROOT/install.sh" </dev/null >/dev/null 2>&1; done
+S2="$H2/.claude/settings.json"
+ctx="python3 '$H2/.bk-shell/lib/context_hook.py'"; guard="python3 '$H2/.bk-shell/lib/tmux_guard.py'"
+n_ctx() { jq --arg c "$ctx" "[.hooks.$1[]?.hooks[]? | select(.command == \$c)] | length" "$S2"; }
+check_eq "$(n_ctx UserPromptSubmit)/$(n_ctx PostToolUse)" "1/1" "con BK_YES=s registra el aviso de contexto en UserPromptSubmit y PostToolUse, una vez"
+check_eq "$(jq -r --arg c "$guard" '[.hooks.PreToolUse[] | select(any(.hooks[]; .command == $c)) | .matcher] | join(",")' "$S2")" \
+  Bash "con BK_YES=s registra la baranda de tmux en PreToolUse con matcher Bash, una vez"
+check_eq "$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$S2")" "$H2/.bk-shell/hooks/agent_state.sh" "el hook de estado sigue igual"
+(cd "$TMP" && sh -c "$ctx" </dev/null >/dev/null 2>&1); check $? "el comando registrado corre aunque la ruta tenga un espacio"
+HOME="$H2" bash "$ROOT/install.sh" --uninstall >/dev/null 2>&1
+check_eq "$(jq -c .hooks "$S2")" '{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"ajeno.sh"}]}]}' \
+  "desinstalar saca el aviso de contexto y la baranda, y deja el hook ajeno"
 
 # bk mode <rol>: la 3.ª columna de roles.yml (el del proyecto manda), bk si no tiene; un rol que no existe falla.
 # role_spec sigue devolviendo solo provider/modelo.

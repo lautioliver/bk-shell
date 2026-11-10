@@ -17,7 +17,7 @@ Regla:
 
 Es una baranda contra accidentes, no contra alguien que quiera esquivarla (`t=tmux; $t kill-server` pasa).
 Nunca falla: ante una entrada que no entiende, no dice nada y Claude Code sigue como siempre.
-No se instala solo: ver "Baranda de tmux" en el README.
+No se instala solo: install.sh pregunta si la registra (o a mano: ver "Baranda de tmux" en el README).
 """
 import bisect
 import json

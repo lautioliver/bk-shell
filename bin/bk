@@ -97,8 +97,8 @@ uso: bk [comando] [--dry-run]
 
 Los comandos de agentes se corren dentro de un proyecto Barrilete.
 Contexto alto (ámbar desde 200k, rojo desde 400k): ▪ en la tira, en el riel y en la columna CTX de bk monitor;
-lib/context_hook.py se lo avisa al agente (registrarlo a mano: ver el README); a 400k le pide el resumen de handoff.
-Opcional: lib/tmux_guard.py, un hook que frena a un agente que iba a tirar tu servidor de tmux (ver el README).
+lib/context_hook.py se lo avisa al agente (install.sh pregunta si lo registra); a 400k le pide el resumen de handoff.
+Opcional: lib/tmux_guard.py, un hook que frena a un agente que iba a tirar tu servidor de tmux (install.sh pregunta).
 Cada workspace tiene un número fijo (el libre más bajo al crearse; no cambia al cerrar otros): alt+N, la tira,
 el header y bk ls lo usan. Cada agente bk queda colgado en la tira de la ventana que lo lanzó (←3, ←i7).
 Comandos propios: si bk no conoce "bk foo", corre bk-foo del PATH o ${BK_PLUGINS:-~/.config/bk/plugins}/foo.

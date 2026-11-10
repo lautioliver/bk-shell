@@ -8,6 +8,8 @@
 #   3. enlaza ~/.local/bin/bk
 #   4. agrega `source-file ~/.bk-shell/tmux/bk.conf` a tu tmux.conf            (te pregunta)
 #   5. registra el hook de estado en ~/.claude/settings.json (con copia de seguridad) (te pregunta)
+#   6. registra el aviso de contexto (lib/context_hook.py)                          (te pregunta)
+#   7. registra la baranda de tmux (lib/tmux_guard.py)                              (te pregunta)
 # Desinstalar: bash ~/.bk-shell/install.sh --uninstall
 set -euo pipefail
 
@@ -17,6 +19,10 @@ BIN="$HOME/.local/bin"
 SETTINGS="$HOME/.claude/settings.json"
 HOOK="$DIR/hooks/agent_state.sh"
 EVENTS="SessionStart UserPromptSubmit PreToolUse PostToolUse PostToolUseFailure PermissionRequest Notification Stop StopFailure SubagentStart SubagentStop SessionEnd"
+# Hooks opcionales de lib/: el comando que queda en settings.json (el mismo que busca --uninstall)
+shq() { python3 -c 'import shlex, sys; print(shlex.quote(sys.argv[1]))' "$1" 2>/dev/null || printf '%s' "$1"; }   # una ruta con espacios o ' no se parte
+CTX_HOOK="python3 $(shq "$DIR/lib/context_hook.py")"
+GUARD_HOOK="python3 $(shq "$DIR/lib/tmux_guard.py")"
 
 c() { printf '\033[38;2;240;149;200m%s\033[0m' "$*"; }
 say() { printf '%s %s\n' "$(c ✿)" "$*"; }
@@ -38,19 +44,19 @@ uninstall() {
   local tc; tc=$(tmux_conf)
   [ -f "$tc" ] && sed -i.bk-bak -e '/^# bk shell$/d' -e '/bk-shell\/tmux\/bk.conf/d' "$tc" && say "saqué bk.conf de $tc"
   if [ -f "$SETTINGS" ]; then
-    python3 - "$SETTINGS" "$HOOK" <<'PY'
+    python3 - "$SETTINGS" "$HOOK" "$CTX_HOOK" "$GUARD_HOOK" <<'PY'
 import json, sys
-p, hook = sys.argv[1:]
+p, *mine = sys.argv[1:]
 s = json.load(open(p))
 for ev, groups in list(s.get("hooks", {}).items()):
     for g in groups:
-        g["hooks"] = [h for h in g.get("hooks", []) if h.get("command") != hook]
+        g["hooks"] = [h for h in g.get("hooks", []) if h.get("command") not in mine]
     s["hooks"][ev] = [g for g in groups if g.get("hooks")]
     if not s["hooks"][ev]:
         del s["hooks"][ev]
 json.dump(s, open(p, "w"), indent=2)
 PY
-    say "saqué el hook de $SETTINGS"
+    say "saqué los hooks de bk de $SETTINGS (estado, aviso de contexto y baranda de tmux)"
   fi
   say "listo. Borrá $DIR si no lo vas a usar más."
   exit 0
@@ -96,25 +102,50 @@ else
   warn "sin atajos: agregá a mano  source-file $DIR/tmux/bk.conf  a tu tmux.conf"
 fi
 
-# 5. Hook de Claude Code
-if ask "¿Registro el hook de estado de bk en $SETTINGS? (es lo que alimenta el riel y la tira)"; then
+# 5–7. Hooks de Claude Code. add_hook <comando> <matcher o ""> <eventos…>: lo suma a cada evento donde no está.
+# La copia de seguridad es la de antes del primer cambio de esta corrida.
+backed_up=0
+add_hook() {
+  local cmd="$1" matcher="$2"; shift 2
   mkdir -p "$(dirname "$SETTINGS")"
-  [ -f "$SETTINGS" ] && cp "$SETTINGS" "$SETTINGS.bk-backup"
-  python3 - "$SETTINGS" "$HOOK" $EVENTS <<'PY'
+  if [ "$backed_up" -eq 0 ] && [ -f "$SETTINGS" ]; then cp "$SETTINGS" "$SETTINGS.bk-backup"; backed_up=1; fi
+  python3 - "$SETTINGS" "$cmd" "$matcher" "$@" <<'PY'
 import json, os, sys
-p, hook, *events = sys.argv[1:]
+p, hook, matcher, *events = sys.argv[1:]
 s = json.load(open(p)) if os.path.exists(p) else {}
 hooks = s.setdefault("hooks", {})
 for ev in events:
     groups = hooks.setdefault(ev, [])
     if any(h.get("command") == hook for g in groups for h in g.get("hooks", [])):
         continue
-    groups.append({"hooks": [{"type": "command", "command": hook}]})
+    g = {"hooks": [{"type": "command", "command": hook}]}
+    if matcher:
+        g = {"matcher": matcher, **g}
+    groups.append(g)
 json.dump(s, open(p, "w"), indent=2)
 PY
+}
+
+if ask "¿Registro el hook de estado de bk en $SETTINGS? (es lo que alimenta el riel y la tira)"; then
+  # shellcheck disable=SC2086  # EVENTS se parte en eventos a propósito
+  add_hook "$HOOK" "" $EVENTS
   say "hook registrado (copia de seguridad: $SETTINGS.bk-backup)"
 else
   warn "sin hook: el riel no va a saber qué hace cada agente"
+fi
+
+if ask "¿Registro el aviso de contexto (lib/context_hook.py)? Le avisa al agente desde 200k de contexto"; then
+  add_hook "$CTX_HOOK" "" UserPromptSubmit PostToolUse
+  say "aviso de contexto registrado en UserPromptSubmit y PostToolUse"
+else
+  warn "sin aviso de contexto (lo podés sumar después: ver el README)"
+fi
+
+if ask "¿Registro la baranda de tmux (lib/tmux_guard.py)? Frena a un agente que iba a tirar tu servidor de tmux"; then
+  add_hook "$GUARD_HOOK" Bash PreToolUse
+  say "baranda de tmux registrada en PreToolUse (Bash)"
+else
+  warn "sin baranda de tmux (la podés sumar después: ver el README)"
 fi
 
 cat <<EOF
