@@ -912,12 +912,13 @@ ws_style() {
   local t="$WS_SESSION:main" s="$WS_SESSION" pal
   # Colores del tema (day/night) y posición del header, de lib/gentle.py y ~/.config/bk/ui.json
   pal=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import gentle as g; p = g.P
-print(p["tint"], p["rose"], p["petal"], p["text"], p["muted"], p["frame"], g.ui()["header"])' "$WS/lib")
-  read -r TINT ROSE PETAL TEXT MUTED FRAME HEAD <<<"$pal"
+print(p["tint"], p["rose"], p["petal"], p["text"], p["muted"], p["frame"], p["iris"], g.ui()["header"])' "$WS/lib")
+  read -r TINT ROSE PETAL TEXT MUTED FRAME IRIS HEAD <<<"$pal"
   tmux set-option -w -t "$t" pane-border-status off >/dev/null
   tmux set-option -w -t "$t" pane-border-lines single >/dev/null
   tmux set-option -w -t "$t" pane-border-style "fg=#$TINT" >/dev/null
   tmux set-option -w -t "$t" pane-active-border-style "fg=#$FRAME" >/dev/null
+  tmux set-option -t "$s" popup-border-style "fg=#$ROSE" >/dev/null   # alt+a/g/k/s…: el rosa del tema (bk.conf trae el de noche)
   # Header a lo Gentle Shell 4: barra con fondo, proyecto · carpeta rama · modelo … uso
   tmux set-option -t "$s" status-position "${HEAD:-top}" >/dev/null
   tmux set-option -t "$s" status-style "bg=#$TINT,fg=#$MUTED" >/dev/null
@@ -928,7 +929,7 @@ print(p["tint"], p["rose"], p["petal"], p["text"], p["muted"], p["frame"], g.ui(
   tmux set-option -t "$s" window-status-current-format '' >/dev/null
   tmux set-option -t "$s" status-left \
     "#[fg=#$ROSE,bold]  ✿ #{s/^bk-//:session_name} #[fg=#$MUTED,nobold]· #[fg=#$TEXT]#{s|$HOME|~|:pane_current_path} #[fg=#$PETAL,bold]#(git -C '#{pane_current_path}' branch --show-current 2>/dev/null)#[nobold] #[fg=#$MUTED]· #[fg=#$TEXT]#(bk _model #{session_name})" >/dev/null
-  tmux set-option -t "$s" status-right "#(bk _footer #{session_name})  " >/dev/null
+  tmux set-option -t "$s" status-right "#[fg=#$IRIS]#(bk _footer #{session_name})  " >/dev/null
 }
 
 # Modelo del chat del workspace (el pane "main.0"), del estado que escribe el hook
@@ -951,7 +952,7 @@ ws_footer() {
   tot=$(jq -s "[.[] | select($sel)] | length" "$STATE_DIR"/*.json 2>/dev/null)
   u=$(python3 "$WS/lib/usage.py" --json 2>/dev/null | jq -r '"\(.tokens/1000000*10|floor/10)M · $\(.cost_usd)"' 2>/dev/null)
   local word=activos; [ "${act:-0}" = 1 ] && word=activo
-  printf '#[fg=#a99cf5]∗ %s %s#[default] · %s ≈API · usage alt+u' "${act:-0}" "$word" "${u:-—}"
+  printf '∗ %s %s#[default] · %s ≈API · usage alt+u' "${act:-0}" "$word" "${u:-—}"
 }
 
 # Proporciones: riel derecho 34 % (mínimo 46 columnas)

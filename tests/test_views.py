@@ -144,6 +144,30 @@ class EstadosUnicos(unittest.TestCase):
         self.assertTrue(AG.line({**ag, "state": "working", "kind": "chat"}, color=False).startswith("◇ "))
 
 
+class SongUiPaleta(unittest.TestCase):
+    def _song_ui(self):
+        argv, sys.argv = sys.argv, ["song_ui", "sock", "song"]   # song_ui lee argv al importarse (es un script)
+        try:
+            import song_ui as SU
+        finally:
+            sys.argv = argv
+        return SU
+
+    def test_las_paletas_salen_de_gentle(self):
+        SU = self._song_ui()
+        for nombre, pal in (("dark", G.NIGHT), ("light", G.DAY)):
+            p = SU.PALETTES[nombre]
+            self.assertEqual(p["PINK"], G.rgb(pal["rose"]), nombre)
+            self.assertEqual(p["DIM"], G.rgb(pal["muted"]), nombre)
+            self.assertEqual(p["TEXT"], G.rgb(pal["text"]), nombre)
+            self.assertEqual((p["BANDS"][0], p["BANDS"][-1]), (G.rgb(pal["muted"]), G.rgb(pal["rose"])), nombre)
+            self.assertEqual(len(p["BANDS"]), 4)
+
+    def test_rgb_y_ramp_con_otra_paleta(self):
+        self.assertEqual(G.rgb("#F095C8"), (240, 149, 200))
+        self.assertEqual(G.ramp(2, "tint", "rose", G.DAY), [G.DAY["tint"], G.DAY["rose"]])
+
+
 class Sidebar(unittest.TestCase):
     def test_estados(self):
         st = {"%1": {"state": "waiting", "tool": "AskUserQuestion"}, "%2": {"state": "waiting", "tool": "Bash"},
