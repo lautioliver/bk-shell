@@ -74,6 +74,15 @@ check $(( $? == 0 )) "--account default le gana a la heredada"
 (cd "$P" && "$ROOT/bin/bk" --account nada plan idea >/dev/null 2>&1); check $(( $? == 0 )) "--account de una cuenta que no existe falla"
 grep -q "cuenta:" <<<"$(plan --account personal)"; check $(( $? == 0 )) "una cuenta de codex no cambia a un agente de claude"
 
+# bk account login default [claude|codex]: el login de la de siempre, sin la cuenta que dejó bk account use
+: >"$TMP/claude.log"
+(cd "$P" && CLAUDE_CONFIG_DIR="$d" BK_ACCOUNT_CLAUDE=trabajo "$ROOT/bin/bk" account login default >/dev/null 2>&1)
+check $? "bk account login default"
+check_eq "$(cat "$TMP/claude.log")" "default auth login" "login default: claude sin CLAUDE_CONFIG_DIR (la de siempre)"
+: >"$TMP/claude.log"
+(cd "$P" && "$ROOT/bin/bk" account login default gemini >/dev/null 2>&1); check $(( $? == 0 )) "login default de un proveedor desconocido falla"
+check_eq "$(cat "$TMP/claude.log")" "" "y no corre ningún login"
+
 if command -v tmux >/dev/null; then
   env -u TMUX PATH="$PATH" tmux -S "$SOCK" -f /dev/null new-session -d -s bk-t -n main -x 120 -y 30 "sh"
   CHAT=$(env -u TMUX tmux -S "$SOCK" list-panes -t bk-t:main -F '#{pane_id}')
@@ -92,6 +101,7 @@ if command -v tmux >/dev/null; then
   bkt plan idea >/dev/null 2>&1; check $? "bk plan lanza con la cuenta de la sesión"
   sleep 0.5
   grep -q "^$d --model" "$TMP/claude.log"; check $? "el agente corre con CLAUDE_CONFIG_DIR de la cuenta"
+  check_eq "$(tm list-windows -t agents-t -F '#{@bk_account}' | head -1)" trabajo "la ventana del agente anota su cuenta (@bk_account)"
   tm show-environment -t agents-t CLAUDE_CONFIG_DIR 2>/dev/null | grep -q "^CLAUDE_CONFIG_DIR="
   check $(( $? == 0 )) "la sesión de agentes no se queda con la cuenta (el próximo agente no la hereda)"
 

@@ -95,7 +95,7 @@ quedó sin commitear, en una sola sesión de tmux.
   login; `bk account use trabajo` la pone en esta sesión: los agentes y chats que lances desde acá corren con ella,
   y otra sesión puede usar otra al mismo tiempo. Las conversaciones son las mismas (`/resume` y `alt+s` ven todas);
   `--relaunch` también cambia el chat principal, retomando su conversación. `bk run … --account X` solo para un
-  lanzamiento; `bk account use default` vuelve a la de siempre. El riel muestra la cuenta en Status.
+  lanzamiento; `bk account use default` vuelve a la de siempre (`bk account login default` rehace su login). El riel muestra la cuenta en Status.
 - **Contexto a la vista**: cada llamada de una sesión vuelve a leer (y a pagar) todo su contexto. Desde 200k
   (ámbar) y 400k (rojo) la tira marca la sesión con `▪` (el número, en el tooltip), el riel muestra el de cada agente
   y el de este chat con la sugerencia de `/clear` o un chat nuevo, y `bk monitor` lo tiene en la columna CTX.
@@ -196,6 +196,14 @@ bk help            # todo lo demás
   ventana (el hook `window-resized` de `tmux/bk.conf`) el riel se achica para dejarle al chat 80 columnas y, si
   no entra, el chat pasa a pantalla completa con el zoom de tmux hasta que vuelve a haber lugar; un zoom hecho a
   mano no se toca.
+- Antes de lanzar un agente, en macOS, bk mira la memoria libre (`memory_pressure`): con menos de
+  `BK_MEM_MIN` % (15) no lanza, porque sin memoria el sistema puede matar al server de tmux con todo adentro.
+  `BK_FORCE=1` lo saltea; en Linux no frena.
+- `bk --dry-run` (con `bk`, `bk chat`, `--rama`, `--suelto` o un lanzamiento) dice qué abriría o lanzaría y no
+  crea nada: ni sesiones, ni ramas, ni worktrees.
+- `bk s`: el chat de cada workspace se ve como `ws N` (su número fijo, con su color); `x` cierra un agente o,
+  con confirmación, un workspace entero (no el tuyo). Un estado cuyo pane de tmux ya no existe se borra y la
+  conversación pasa a recientes.
 - Los costos son el **equivalente en API** de los tokens (con una suscripción no se cobra así).
 
 ## Tests

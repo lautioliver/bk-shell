@@ -29,7 +29,8 @@ usage() {
 uso: bk [comando] [--dry-run]
 
   (sin comando)     el workspace del proyecto de esta carpeta: chat + riel (sesión tmux "bk-<proyecto>";
-                    si ya existe, vuelve a ella). Uno por proyecto, cada uno en su escritorio
+                    si ya existe, vuelve a ella y, si su chat se cerró, lo repone). Uno por proyecto
+  --dry-run         dice qué haría y no abre ni crea nada (lanzamientos, bk, bk chat, --rama, --suelto)
   rerun [--go] [pr…]  volver a correr los checks de Actions que fallaron (sin --go: solo muestra)
   new | n           popup "Nuevo": chat nuevo en este proyecto u otro workspace (alt+n, o + en la tira)
   chat [--suelto]   otro chat del proyecto, como un workspace más en la tira (con su número fijo: alt+N); --suelto: sin
@@ -56,7 +57,8 @@ uso: bk [comando] [--dry-run]
   stats             estadísticas de uso: actividad, modelos, rachas, costo (alt+u)
   customize         estilo del workspace: header arriba o abajo (alt+,)
   s                 sesiones de Claude estilo Orca: abiertas (saltar) y recientes de todas las
-                    carpetas (retomar con claude --resume). En tmux: prefijo + s
+                    carpetas (retomar con claude --resume). En tmux: prefijo + s. El chat de un workspace
+                    lleva su número ("ws 3"); x cierra un agente o, con confirmación, un workspace entero
   peek [ventana] [n] ver qué hace un agente sin entrar (sin ventana: todos, últimas líneas)
   say [agente] "…"  escribirle a un agente (o a un chat por su nombre) como si estuvieras ahí; sin agente, al que te espera.
                     Si el agente está trabajando, se encola y se escribe al terminar su turno (--now: ya)
@@ -72,7 +74,7 @@ uso: bk [comando] [--dry-run]
   roles             qué provider/modelo corre cada rol en este proyecto, y su modo
   account           cuentas de Claude o Codex por sesión, con las mismas conversaciones (bk account help):
                     new <claude|codex> <nombre> · use <nombre> [--relaunch] · --account <nombre> en
-                    cualquier lanzamiento
+                    cualquier lanzamiento · login default [claude|codex] (el login de la de siempre)
   sound [on|off|test]  sonido por tipo de pedido de los agentes: terminó, pregunta, permiso, error
   song [género]     radio por género (techno, house, rock, reggaeton, cachengue), tuya o cualquier url (bk song help)
   mode <rol>        cómo lo lanza el orquestador: main (la sesión principal), bk (ventana propia) o
@@ -192,8 +194,8 @@ cmd_account() {
       info "cuenta $name creada: ahora el login de $prov (las conversaciones son las mismas de siempre)"
       account_login "$name" ;;
     login)
-      [ -n "${1:-}" ] || die "bk account login <nombre>"
-      account_login "$1" ;;
+      [ -n "${1:-}" ] || die "bk account login <nombre> (o default [claude|codex])"
+      account_login "$1" "${2:-}" ;;
     use)
       account_use "$@" ;;
     -h|--help|help)
@@ -201,6 +203,7 @@ cmd_account() {
 uso: bk account                       las cuentas (● con sesión iniciada) y las de esta sesión
      bk account new <claude|codex> <nombre>   crear una cuenta y hacer su login
      bk account login <nombre>        volver a hacer el login de una cuenta
+     bk account login default [claude|codex]   el login de la de siempre (~/.claude, ~/.codex)
      bk account use <nombre> [--relaunch]   usarla en esta sesión: lo que lances desde acá
                                        (agentes, chats) corre con ella. --relaunch: el chat principal
                                        también, retomando la misma conversación
@@ -213,7 +216,19 @@ EOF
 }
 
 account_login() {
-  local name="$1" prov kv; prov=$(python3 "$ACCOUNTS" provider "$name")
+  local name="$1" prov kv
+  # default no tiene carpeta: es la config de siempre. Sin CLAUDE_CONFIG_DIR/CODEX_HOME, que una sesión con
+  # otra cuenta (bk account use) deja en el entorno de las shells nuevas y haría el login de esa otra.
+  if [ "$name" = default ]; then
+    case "${2:-claude}" in
+      claude) env -u CLAUDE_CONFIG_DIR -u BK_ACCOUNT_CLAUDE claude auth login ;;
+      codex)  command -v codex >/dev/null || die "Codex CLI no está instalado"
+              env -u CODEX_HOME -u BK_ACCOUNT_CODEX codex login ;;
+      *)      die "bk account login default [claude|codex]" ;;
+    esac
+    return
+  fi
+  prov=$(python3 "$ACCOUNTS" provider "$name")
   [ -n "$prov" ] || die "no existe la cuenta $name (bk account)"
   kv=$(python3 "$ACCOUNTS" env "$name")
   case "$prov" in
@@ -329,6 +344,22 @@ launcher_of() {
   fi
 }
 
+# mem_ok: ¿hay memoria para otro agente? Con la memoria agotada, macOS empieza a matar procesos y puede
+# llevarse al server de tmux con todos los chats y agentes. Mira el "memory free percentage" de
+# memory_pressure (el swap usado no baja solo y daría falsas alarmas). Sin memory_pressure (Linux) no frena.
+# BK_MEM_MIN: el mínimo en % (15). BK_FORCE=1 lo saltea.
+mem_ok() {
+  [ "${BK_FORCE:-0}" = 1 ] && return 0
+  command -v memory_pressure >/dev/null || return 0
+  local free; free=$(memory_pressure -Q 2>/dev/null | sed -nE 's/.*free percentage: ([0-9]+)%.*/\1/p')
+  [ -n "$free" ] || return 0
+  if [ "$free" -lt "${BK_MEM_MIN:-15}" ]; then
+    printf 'bk: queda %s%% de memoria libre. Otro agente puede dejar al sistema sin memoria y tirar tmux con todo.\n' "$free" >&2
+    printf '    Cerrá algo (agentes listos con bk stop, pestañas del navegador) o forzalo con BK_FORCE=1.\n' >&2
+    return 1
+  fi
+}
+
 # launch <ventana> <dir> <rol> <ref> <comando> [tarea] [orquestado: 1 si lo lanzó un orquestador]
 # Con tarea (ADR-005): la crea (o arranca la pendiente), le pasa BK_TASK_DIR al agente y, si el proceso
 # del agente termina sin `bk done`, la cierra como incomplete.
@@ -344,6 +375,7 @@ launch() {
   [ -n "$cta" ] && printf '  cuenta: %s\n' "$cta"
   [ "$DRY" -eq 1 ] && { info "(dry-run: no se lanzó nada)"; return 0; }
 
+  mem_ok || exit 1
   need_tmux
   if has_window "$win"; then
     # Misma ventana en otro proyecto (#12 de mi-proyecto y #12 de demo): prefijar con el proyecto
@@ -383,6 +415,8 @@ launch() {
   fi
   # La ventana queda abierta si el agente termina, para leer lo último
   tmux set-option -w -t "$SESSION:$win" remain-on-exit on >/dev/null
+  # La cuenta con la que corre, para retomarlo con la misma (bk restore de una capa propia, por ejemplo)
+  [ -z "$cta" ] || tmux set-option -w -t "$SESSION:$win" @bk_account "$cta" >/dev/null
   # La tira lo cuelga de la ventana que lo lanzó
   [ -z "$parent" ] || tmux set-option -w -t "$SESSION:$win" @bk_parent "$parent" >/dev/null
   pre_register "$win" "$pane" "$dir" "$role" "$model" "$ref"
@@ -459,9 +493,7 @@ cmd_approve() {
 # Pane de lo que devolvió resolve_win: un agente (su ventana) o un chat (chat:<workspace>)
 win_pane() {
   case "$1" in
-    chat:*) # el pane del chat del workspace: el de la ventana main que no es la tira ni el riel
-            tmux list-panes -t "${1#chat:}:main" -F '#{pane_id} #{pane_start_command}' 2>/dev/null \
-              | grep -v -e 'bk rail' -e 'bk sidebar' | head -1 | cut -d' ' -f1 ;;
+    chat:*) ws_chat_pane "${1#chat:}" ;;
     *)      agent_target "$1" ;;
   esac
 }
@@ -670,11 +702,18 @@ project_of() { basename "$(project_top "$1")" | tr '.:' '__'; }
 WS_SESSION="${BK_WS_SESSION:-}"
 
 workspace() {
+  # --dry-run: decir qué abriría y nada más (todo lo que abre workspaces pasa por acá: bk ws, bk chat,
+  # --rama). La carpeta puede no existir todavía (el worktree de --rama no se crea en dry-run).
+  if [ "$DRY" -eq 1 ]; then
+    info "(dry-run: abriría el workspace ${WS_SESSION:-bk-$(project_of "${1:-$PWD}" 2>/dev/null)} en ${1:-$PWD})"
+    return 0
+  fi
   need_tmux
   local dir; dir=$(cd "${1:-$PWD}" && pwd) || die "no existe $1"
   local top; top=$(project_top "$dir")
   WS_SESSION="${WS_SESSION:-bk-$(project_of "$dir")}"
-  if ! tmux has-session -t "$WS_SESSION" 2>/dev/null; then
+  # "=" nombre exacto: sin él, tmux toma prefijos y bk-demo "existía" si estaba bk-demo-2
+  if ! tmux has-session -t "=$WS_SESSION" 2>/dev/null; then
     local cols lines chat rail
     cols=$(tput cols 2>/dev/null || echo 200); lines=$(tput lines 2>/dev/null || echo 50)
     # El chat sobrevive a un /exit: vuelve a una shell en la misma carpeta
@@ -682,7 +721,7 @@ workspace() {
     # también la deja en el entorno de la sesión, como bk account use
     local CTA cx; account_args claude; cx=$(account_of codex)
     chat=$(tmux new-session -d -P -F '#{pane_id}' -s "$WS_SESSION" -n main -c "$dir" -x "$cols" -y "$lines" \
-           -e "BK_PROJECT=$top" "${CTA[@]+"${CTA[@]}"}" "claude; exec \$SHELL")
+           -e "BK_PROJECT=$top" "${CTA[@]+"${CTA[@]}"}" "${WS_CHAT_CMD:-claude}; exec \$SHELL")
     [ ${#CTA[@]} -eq 0 ] || tmux set-option -t "$WS_SESSION" @bk_account_claude "$(account_of claude)"
     [ -z "$cx" ] || { BK_FROM="$WS_SESSION" account_use "$cx" >/dev/null; }
     tmux set-environment -t "$WS_SESSION" BK_PROJECT "$top"
@@ -704,6 +743,8 @@ workspace() {
     tmux set-hook -t "$WS_SESSION" client-attached "run-shell -b 'bk _layout #{session_name}'"
     # (el cambio de tamaño de la ventana lo agarra el hook global window-resized de tmux/bk.conf: también al
     # cambiar de sesión, que client-resized no ve)
+  else
+    ws_chat_pane "$WS_SESSION" >/dev/null   # si el chat se cerró, volver a entrar lo repone
   fi
   if [ -n "${TMUX:-}" ]; then tmux switch-client ${BK_CLIENT:+-c "$BK_CLIENT"} -t "$WS_SESSION"; else exec tmux attach -t "$WS_SESSION"; fi
 }
@@ -750,6 +791,27 @@ cmd_rerun() {
 # bk _agent <sesión> <N|0>: muestra el agente N de la tira en el lugar del chat del workspace (swap-pane:
 # la tira y el riel quedan). 0 devuelve el orquestador. El pane del chat se marca con @bk_ws para
 # reconocerlo aunque esté de visita en la sesión agents.
+# ws_chat_pane <sesión>: el pane del chat del workspace (el de la ventana main que no es la tira ni el riel).
+# Si ya no está (se cerró y quedaron solo el riel y la tira), lo vuelve a crear a la izquierda del riel con un
+# claude nuevo en el proyecto (tira | chat | riel) y bk _layout devuelve a cada uno su ancho.
+ws_chat_pane() {
+  local s="${1:?}" w="$1:main" chat rail top
+  chat=$(tmux list-panes -t "$w" -F '#{pane_id} #{pane_start_command}' 2>/dev/null \
+         | grep -v -e 'bk rail' -e 'bk sidebar' | head -1 | cut -d' ' -f1 || true)
+  if [ -z "$chat" ]; then
+    rail=$(tmux list-panes -t "$w" -F '#{pane_id} #{pane_start_command}' 2>/dev/null \
+           | grep 'bk rail' | head -1 | cut -d' ' -f1 || true)
+    [ -n "$rail" ] || return 0
+    top=$(tmux show-environment -t "$s" BK_PROJECT 2>/dev/null | sed -n 's/^BK_PROJECT=//p' || true)
+    [ -d "$top" ] || top="$HOME"
+    chat=$(tmux split-window -d -P -F '#{pane_id}' -hb -t "$rail" -c "$top" -e "BK_PROJECT=$top" "claude; exec \$SHELL") || return 0
+    tmux set-option -p -t "$chat" allow-set-title off >/dev/null 2>&1 || true
+    tmux select-pane -t "$chat" -T "✿ chat" || true
+    "$WS/bin/bk" _layout "$s" >/dev/null 2>&1 || true
+  fi
+  echo "$chat"
+}
+
 ws_agent() {
   set +euo pipefail
   local s="${1:?}" n="${2:-0}" w guest chat target
@@ -768,8 +830,8 @@ ws_agent() {
   target=$(tmux list-panes -s -t "$SESSION" -F '#{pane_id} #{@bk_ws}' 2>/dev/null | awk '$2 == "" {print $1}' | sed -n "${n}p")
   fi
   [ -n "$target" ] || { tmux display-message "no hay agente $n"; return; }
-  chat=$(tmux list-panes -t "$w" -F '#{pane_id} #{pane_start_command}' | grep -v -e 'bk rail' -e 'bk sidebar' | head -1 | cut -d' ' -f1)
-  [ -n "$chat" ] || return
+  chat=$(ws_chat_pane "$s")
+  [ -n "$chat" ] || { tmux display-message "no encuentro el lugar del chat en $s"; return; }
   tmux set-option -p -t "$chat" @bk_ws "$s"
   tmux swap-pane -d -s "$target" -t "$chat"
   tmux set-option -w -t "$w" @bk_guest "$target"; tmux set-option -w -t "$w" @bk_chat "$chat"
@@ -835,7 +897,9 @@ cmd_chat() {
            | cut -c1-30 | sed 's/^-*//; s/-*$//')
     [ -n "$slug" ] || die "el nombre '$branch' no deja un nombre de rama válido (usá letras o números)"
     wt="$(dirname "$top")/$(basename "$top")-wt/chat-$slug"
-    if [ ! -d "$wt" ]; then
+    if [ ! -d "$wt" ] && [ "$DRY" -eq 1 ]; then
+      info "(dry-run: crearía la rama chat/$slug en $wt)"
+    elif [ ! -d "$wt" ]; then
       git -C "$top" fetch -q origin 2>/dev/null
       base=$(git -C "$top" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || echo HEAD)
       if git -C "$top" show-ref -q --verify "refs/heads/chat/$slug"; then
@@ -862,7 +926,9 @@ cmd_chat() {
     return
   fi
   # Chat sin proyecto: en una carpeta propia (~/.bk/chats), así Claude no lee tu home ni pide confiar en ella
-  top="$HOME/.bk/chats"; mkdir -p "$top"; name="c-suelto"
+  top="$HOME/.bk/chats"; name="c-suelto"
+  [ "$DRY" -eq 1 ] && { info "(dry-run: abriría un chat sin proyecto en $top)"; return 0; }
+  mkdir -p "$top"
   n=1; while has_window "$name$([ $n -gt 1 ] && echo "-$n")"; do n=$((n + 1)); done
   [ $n -gt 1 ] && name="$name-$n"
   local CTA kv; account_args claude
@@ -874,6 +940,7 @@ cmd_chat() {
     for kv in "${CTA[@]+"${CTA[@]}"}"; do [ "$kv" = -e ] || tmux set-environment -u -t "$SESSION" "${kv%%=*}" 2>/dev/null || true; done
   fi
   tmux set-option -w -t "$SESSION:$name" remain-on-exit on >/dev/null
+  [ ${#CTA[@]} -eq 0 ] || tmux set-option -w -t "$SESSION:$name" @bk_account "$(account_of claude)" >/dev/null
   case "$s" in bk*) ws_agent "$s" "$pane" ;; *) info "chat nuevo: $name (bk go $name)" ;; esac
 }
 
