@@ -752,7 +752,7 @@ workspace() {
     ws_style
     tmux select-pane -t "$chat"
     # La sesión nace con el tamaño de la terminal que la crea: reacomodar al conectarse/redimensionar
-    tmux set-hook -t "$WS_SESSION" client-attached "run-shell -b 'bk _layout #{session_name}'"
+    tmux set-hook -t "$WS_SESSION" client-attached "run-shell -b 'bk _layout #{q:session_name}'"
     # (el cambio de tamaño de la ventana lo agarra el hook global window-resized de tmux/bk.conf: también al
     # cambiar de sesión, que client-resized no ve)
   else
@@ -1152,8 +1152,8 @@ print(p["tint"], p["rose"], p["petal"], p["text"], p["muted"], p["frame"], p["ir
   tmux set-option -t "$s" window-status-format '' >/dev/null
   tmux set-option -t "$s" window-status-current-format '' >/dev/null
   tmux set-option -t "$s" status-left \
-    "  $tag#[fg=#$ROSE,bold]✿ #{s/^bk-//:session_name} #[fg=#$MUTED,nobold]· #[fg=#$TEXT]#{s|$HOME|~|:pane_current_path} #[fg=#$PETAL,bold]#(git -C '#{pane_current_path}' branch --show-current 2>/dev/null)#[nobold] #[fg=#$MUTED]· #[fg=#$TEXT]#(bk _model #{session_name})" >/dev/null
-  tmux set-option -t "$s" status-right "#[fg=#$IRIS]#(bk _footer #{session_name})  " >/dev/null
+    "  $tag#[fg=#$ROSE,bold]✿ #{s/^bk-//:session_name} #[fg=#$MUTED,nobold]· #[fg=#$TEXT]#{s|$HOME|~|:pane_current_path} #[fg=#$PETAL,bold]#(git -C #{q:pane_current_path} branch --show-current 2>/dev/null)#[nobold] #[fg=#$MUTED]· #[fg=#$TEXT]#(bk _model #{q:session_name})" >/dev/null
+  tmux set-option -t "$s" status-right "#[fg=#$IRIS]#(bk _footer #{q:session_name})  " >/dev/null
 }
 
 # Modelo del chat del workspace (el pane "main.0"), del estado que escribe el hook
@@ -1189,16 +1189,22 @@ ws_layout() {
   local ses="${1:-$WS_SESSION}"
   case "$ses" in bk*) ;; *) return 0 ;; esac            # el hook es global: solo los workspaces
   # De a uno por sesión: cada paso del zoom dispara el hook, y dos a la vez podían prender y apagar el zoom
-  # del chat en el mismo momento. mkdir es atómico; un lock de más de 5 s es de uno que murió.
-  local lock="${TMPDIR:-/tmp}/bk-layout-$ses.lock" i got=0 born
+  # del chat en el mismo momento. mkdir es atómico y adentro queda el pid del dueño: el lock es de uno que murió
+  # si ese pid ya no existe, si no tiene pid (murió entre el mkdir y anotarlo) y es de hace más de 5 s, o si
+  # pasó un minuto (un pid reusado). Uno vivo que tarda no lo pierde.
+  local lock="${TMPDIR:-/tmp}/bk-layout-${ses//[^A-Za-z0-9_.-]/_}.lock" i got=0 owner born limit
   for i in $(seq 50); do
-    mkdir "$lock" 2>/dev/null && { got=1; break; }
-    born=$(mtime "$lock")
-    [ -n "$born" ] && [ $(( $(date +%s) - born )) -gt 5 ] && rmdir "$lock" 2>/dev/null
+    if mkdir "$lock" 2>/dev/null; then echo "$$" > "$lock/pid"; got=1; break; fi
+    owner=$(cat "$lock/pid" 2>/dev/null); born=$(mtime "$lock"); limit=5
+    [ -n "$owner" ] && limit=60
+    if { [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; } \
+       || { [ -n "$born" ] && [ $(( $(date +%s) - born )) -gt "$limit" ]; }; then
+      rm -f "$lock/pid"; rmdir "$lock" 2>/dev/null
+    fi
     sleep 0.1
   done
   [ "$got" = 1 ] || return 0                           # no se pudo: el que tiene el lock ya acomoda
-  trap 'rmdir "$lock" 2>/dev/null; trap - RETURN' RETURN
+  trap 'rm -f "$lock/pid"; rmdir "$lock" 2>/dev/null; trap - RETURN' RETURN
   local t="$ses:main" W rail w side chat max zoomed auto
   W=$(tmux display-message -p -t "$t" '#{window_width}')
   [ -n "$W" ] || return 0

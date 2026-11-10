@@ -5,7 +5,7 @@ Lado a lado si entran en el ancho del panel, una arriba de la otra si no. Se red
 Fuentes: el estado que escribe el hook ($BK_STATE_DIR/*.json, default ~/.cache/bk/agents), las ventanas de
 tmux y usage.py --json. --once dibuja una vez y sale.
 """
-import glob, json, os, shutil, subprocess, sys, time, unicodedata
+import glob, json, math, os, re, shutil, subprocess, sys, time, unicodedata
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, HERE)
@@ -15,6 +15,21 @@ SESSION = os.environ.get("BK_SESSION", "agents")
 
 RST, DIM, BOLD = "\033[0m", "\033[2m", "\033[1m"
 C = {"mauve": G.ROSE, "green": G.GREEN, "yellow": G.AMBER, "red": G.RED, "blue": G.IRIS, "gray": G.MUTED}
+
+
+_CTRL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def clean(text):
+    """Sin caracteres de control (como sidebar.clean): un ESC en un campo del estado no borra la pantalla ni
+    cambia el título de la terminal."""
+    return _CTRL.sub(" ", str(text or "")).strip()
+
+
+def num(x, default=0.0):
+    """Un número del estado, o default si no lo es (un "ts" roto no tira el dash entero)."""
+    ok = isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
+    return float(x) if ok else default
 
 
 def state_style(state):
@@ -69,28 +84,32 @@ def agents():
     items = []
     for f in glob.glob(os.path.join(STATE, "*.json")):
         try:
-            items.append(json.load(open(f)))
+            with open(f) as fh:
+                a = json.load(fh)
         except Exception:
-            pass
+            continue
+        if isinstance(a, dict):   # un JSON que no es un objeto se saltea, como uno roto
+            items.append(a)
     order = {"waiting": 0, "working": 1, "background": 1, "done": 2, "idle": 3}
-    items.sort(key=lambda a: (order.get(a.get("state"), 9), -a.get("ts", 0)))
+    st_of = lambda a: a.get("state") if isinstance(a.get("state"), str) else None
+    items.sort(key=lambda a: (order.get(st_of(a), 9), -num(a.get("ts"))))
     rows, colors, now = [], [], time.time()
     for a in items:
-        parts = (a.get("cwd") or "").rstrip("/").split("/")
+        parts = clean(a.get("cwd")).rstrip("/").split("/")
         proj = parts[-1] if parts else "—"
         if len(parts) > 1 and parts[-2].endswith("-wt"):
             proj = parts[-2][:-3] + "#" + parts[-1]
-        win = panes.get(a.get("pane") or "", "")
-        ref = a.get("ref") or ""
-        st, col = state_style(a.get("state"))
-        if a.get("phase") == "plan_pending" and a.get("state") in ("done", "idle"):
+        win = clean(panes.get(a.get("pane") if isinstance(a.get("pane"), str) else "", ""))
+        ref = clean(a.get("ref"))
+        st, col = state_style(st_of(a))
+        if a.get("phase") == "plan_pending" and st_of(a) in ("done", "idle"):
             st, col = "● plan: tu sí", C["red"]
         if a.get("tool") == "confianza":
             st, col = state_style("trust")
-        mins = int((now - a.get("ts", now)) // 60)
+        mins = max(0, int((now - num(a.get("ts"), now)) // 60))
         ago = f"{mins}m" if mins < 60 else f"{mins // 60}h{mins % 60:02d}"
         rows.append([win or "chat", proj + (f" {ref}" if ref and ref not in proj else ""),
-                     a.get("role") or "—", short_model(a.get("model")), st, ago])
+                     clean(a.get("role")) or "—", short_model(clean(a.get("model"))), st, ago])
         colors.append([C["blue"] if win else C["gray"], "", "", C["gray"], col, C["gray"]])
     if not rows:
         rows, colors = [["—", "sin agentes", "", "", "", ""]], None
@@ -113,7 +132,7 @@ def usage():
         return table("uso de hoy", ["modelo", "tokens", "costo"], [["—", "—", "—"]])
     rows, colors = [], []
     for m, v in sorted(u.get("by_model", {}).items(), key=lambda kv: -kv[1]["cost"]):
-        rows.append([short_model(m), human(v["tokens"]), f"${v['cost']:.2f}", str(v["msgs"])])
+        rows.append([short_model(clean(m)), human(v["tokens"]), f"${v['cost']:.2f}", str(v["msgs"])])
         colors.append(["", "", C["yellow"], C["gray"]])
     rows.append(["total", human(u.get("tokens", 0)), f"${u.get('cost_usd', 0):.2f}", str(u.get("messages", 0))])
     colors.append([BOLD, BOLD, BOLD + C["yellow"], C["gray"]])

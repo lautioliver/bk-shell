@@ -39,6 +39,22 @@ check_eq "$(decide 'env -u TMUX TMUX_TMPDIR=/tmp/x tmux kill-server')" pass "env
 check_eq "$(decide 'unset TMUX; tmux kill-server')" pass "unset TMUX antes: pasa"
 check_eq "$(decide 'TMUX= tmux kill-server')" pass "TMUX= vacía: pasa"
 check_eq "$(decide '(unset TMUX; tmux kill-server)')" pass "unset TMUX en el mismo subshell: pasa"
+check_eq "$(decide 'env -u TMUX_PANE -u TMUX tmux kill-server')" pass "env con otro -u antes de -u TMUX: pasa"
+check_eq "$(decide 'env -i PATH=/usr/bin tmux kill-server')" pass "env -i (sin ninguna variable): pasa"
+check_eq "$(decide 'env -u TMUX sh -c "tmux kill-server"')" pass "env -u TMUX sh -c \"…\": el tmux de adentro hereda el env: pasa"
+check_eq "$(decide 'TMUX=; tmux kill-server')" pass "TMUX= sola (vacía en el shell): pasa"
+check_eq "$(decide 'export TMUX=; tmux kill-server')" pass "export TMUX= vacía: pasa"
+# env -u TMUX y TMUX= valen solo para el comando que les sigue; un unset en un subshell no queda
+check_eq "$(decide 'env -u TMUX TMUX_TMPDIR=/tmp/x bash tests/run.sh; tmux kill-server')" deny "env -u TMUX de otro comando antes del ;: frena"
+check_eq "$(decide 'env -u TMUX true && tmux kill-server')" deny "env -u TMUX de otro comando antes del &&: frena"
+check_eq "$(decide 'env -u TMUX true | tmux kill-server')" deny "env -u TMUX de otro comando del pipeline: frena"
+check_eq "$(decide 'TMUX= true; tmux kill-server')" deny "TMUX= de otro comando: frena"
+check_eq "$(decide 'env -u TMUX echo $(tmux kill-server)')" deny "un \$(…) lo corre el shell de afuera, con TMUX: frena"
+check_eq "$(decide 'export TMUX=/tmp/otro; tmux kill-server')" deny "export TMUX=<otro valor> no es sacarla: frena"
+check_eq "$(decide 'unset TMUX | true; tmux kill-server')" deny "unset TMUX en un pipeline (subshell): frena"
+check_eq "$(decide 'unset TMUX & tmux kill-server')" deny "unset TMUX en el fondo (subshell): frena"
+check_eq "$(decide 'sh -c "unset TMUX"; tmux kill-server')" deny "unset TMUX adentro de un sh -c ya cerrado: frena"
+check_eq "$(decide 'unset TMUX_PANE; tmux kill-server')" deny "unset de otra variable: frena"
 # pkill / killall / kill <pid>
 check_eq "$(decide 'pkill -f tmux')" deny "pkill tmux: frena"
 check_eq "$(decide 'killall tmux')" deny "killall tmux: frena"
@@ -47,6 +63,14 @@ check_eq "$(decide 'kill -9 7777')" deny "kill del server de este entorno (aunqu
 check_eq "$(decide 'kill -s KILL 4242')" deny "kill -s KILL <server>: frena"
 check_eq "$(decide 'kill 5555')" pass "kill de un cliente de tmux: pasa"
 check_eq "$(decide 'kill 6000')" pass "kill de otro proceso: pasa"
+check_eq "$(decide 'kill -s 9 4242')" deny "kill -s <número> <server>: frena"
+check_eq "$(decide 'kill $(pgrep tmux)')" deny "kill \$(pgrep tmux): frena"
+check_eq "$(decide 'kill -9 `pgrep -f tmux`')" deny "kill \`pgrep -f tmux\`: frena"
+check_eq "$(decide 'kill $(pidof tmux)')" deny "kill \$(pidof tmux): frena"
+check_eq "$(decide 'pgrep tmux | xargs kill')" deny "pgrep tmux | xargs kill: frena"
+check_eq "$(decide "ps aux | grep tmux | awk '{print \$2}' | xargs kill -9")" deny "ps | grep tmux | … | xargs kill: frena"
+check_eq "$(decide 'pgrep tmux; kill 6000')" pass "pgrep tmux y después un kill de otra cosa: pasa"
+check_eq "$(decide 'kill $(pgrep -f tmux_guard)')" pass "pgrep de otra cosa que contiene tmux: pasa"
 # kill-session: pregunta solo por las tuyas
 check_eq "$(decide 'tmux kill-session -t bk-demo')" ask "kill-session de un workspace: pregunta"
 check_eq "$(decide 'tmux kill-session -t =agents')" ask "kill-session de agents: pregunta"
@@ -67,5 +91,15 @@ big=$(python3 -c 'print("(" * 20000 + ")" * 20000 + " unset TMUX; " + "tmux ls; 
 t0=$(date +%s)
 decide "$big" >/dev/null
 check "$([ $(( $(date +%s) - t0 )) -lt 5 ] && echo 0 || echo 1)" "un comando enorme y anidado se decide en menos de 5 s"
+# kill con 40 `-s` seguidos y sin pids: antes cada -s se leía de dos maneras (2^40 intentos)
+many=$(python3 -c 'print("kill" + " -s" * 40 + " x")')
+t0=$(date +%s)
+check_eq "$(decide "$many")" pass "kill -s -s … x (40 veces): pasa"
+check "$([ $(( $(date +%s) - t0 )) -lt 3 ] && echo 0 || echo 1)" "y se decide en menos de 3 s"
+# env y asignaciones encadenadas en un solo comando: cada una se lee una vez (no relee el resto por cada env)
+big=$(python3 -c 'print("env -u A " * 8000 + "A=1 " * 8000 + "unset " + "a " * 3000 + "; " + "TMUX= x; " * 3000 + "\"" * 3000 + "kill tmux pgrep; " * 2000)')
+t0=$(date +%s)
+decide "$big" >/dev/null
+check "$([ $(( $(date +%s) - t0 )) -lt 5 ] && echo 0 || echo 1)" "muchos env, asignaciones, unset, TMUX= y comillas: menos de 5 s"
 
 finish

@@ -11,7 +11,8 @@ cat > "$TMP/bin/tmux" <<SH
 #!/usr/bin/env bash
 echo "\$*" >> "$TMP/tmux.log"
 case "\$1 \$*" in
-  display-message*window_width*) echo "\${FAKE_W:-200}" ;;
+  display-message*window_width*) echo "\${FAKE_W:-200}"   # y anota el pid que bk dejó en su lock
+    cat "$TMP"/tmp/bk-layout-*.lock/pid >> "$TMP/owner.log" 2>/dev/null ;;
   display-message*window_zoomed_flag*) echo "\${FAKE_ZOOM:-0}" ;;
   show-options*@bk_autozoom*) echo "\${FAKE_AUTO:-}" ;;
   list-panes*) printf '%%0 claude\n%%1 bk rail\n%%2 bk sidebar\n' ;;
@@ -49,17 +50,29 @@ check_eq "$(zoom)$(resize %1)" "0" "zoom hecho a mano: no lo toca"
 layout 200 agents
 check_eq "$(wc -l < "$TMP/tmux.log" | tr -d ' ')" "0" "el hook es global: otra sesión (no bk*) no se toca"
 
-# El lock por sesión: uno viejo (de un bk que murió) vence; uno fresco ajeno no se borra
-mkdir "$TMP/tmp/bk-layout-bk-t.lock"; touch -t 200001010000 "$TMP/tmp/bk-layout-bk-t.lock"
+# El lock por sesión (un directorio con el pid del dueño): el de uno que murió vence; el de uno vivo, no.
+# Sin procesos de fondo ni carreras con el reloj: la edad del lock se fija con os.utime.
+L="$TMP/tmp/bk-layout-bk-t.lock"
+age() { python3 -c 'import os, sys, time; t = time.time() - int(sys.argv[2]); os.utime(sys.argv[1], (t, t))' "$1" "$2"; }
+mkdir "$L"; age "$L" 30
 layout 200
-check_eq "$(resize %1)" "-x 68" "un lock viejo (más de 5 s) vence y acomoda igual"
-check "$([ ! -d "$TMP/tmp/bk-layout-bk-t.lock" ]; echo $?)" "y al terminar suelta el lock"
-mkdir "$TMP/tmp/bk-layout-bk-t.lock"
-( sleep 2; touch "$TMP/tmp/bk-layout-bk-t.lock" ) &   # sigue vivo: lo renueva mientras esperamos
-layout 200; wait
-check_eq "$(resize %1)" "" "con el lock de otro vivo, no acomoda"
-check "$([ -d "$TMP/tmp/bk-layout-bk-t.lock" ]; echo $?)" "y no le borra el lock al otro"
-rmdir "$TMP/tmp/bk-layout-bk-t.lock"
+check_eq "$(resize %1)" "-x 68" "un lock viejo sin pid (más de 5 s) vence y acomoda igual"
+check "$([ ! -e "$L" ]; echo $?)" "y al terminar suelta el lock"
+sh -c 'exit 0' & dead=$!; wait "$dead"
+mkdir "$L"; echo "$dead" > "$L/pid"
+layout 200
+check_eq "$(resize %1)" "-x 68" "un lock recién hecho pero de un pid que ya no existe vence"
+check "$([ ! -e "$L" ]; echo $?)" "y lo suelta al terminar"
+mkdir "$L"; echo "$$" > "$L/pid"; age "$L" 20
+layout 200
+check_eq "$(resize %1)" "" "con el lock de uno vivo, aunque tenga más de 5 s, no acomoda"
+check_eq "$(cat "$L/pid" 2>/dev/null)" "$$" "y no le borra el lock al otro"
+rm -rf "$L"
+: > "$TMP/owner.log"; layout 200
+grep -qE '^[0-9]+$' "$TMP/owner.log"; check $? "mientras acomoda, el lock tiene el pid de su dueño"
+layout 200 'bk-x/../../fuera'
+check_eq "$(resize %1)" "-x 68" "un nombre con / igual toma su lock (adentro de TMPDIR) y acomoda"
+check_eq "$(find "$TMP" -name '*fuera*' | wc -l | tr -d ' ')" "0" "y lo suelta"
 
 conf 7 40 30 10 5
 layout 200
@@ -78,7 +91,7 @@ grep -qE 'split-window .*-l "\$SIDE_W"' "$ROOT/bin/bk"; check $? "bk crea la tir
 SUELTO=$(grep -nE "34 */ *100|-l 34%|-hb -l [0-9]+ |-x [0-9]+\b|-lt 46|=46|SIDE_W=|LAYOUT_CHAT=|LAYOUT_RAIL=" "$ROOT/bin/bk" || true)
 check_eq "$SUELTO" "" "sin anchos sueltos en bin/bk"
 # El reacomodo al cambiar de tamaño es un hook global de tmux/bk.conf, no uno por sesión
-grep -qE "^set-hook -g window-resized .*bk _layout #\{session_name\}" "$ROOT/tmux/bk.conf"; check $? "bk.conf registra window-resized → bk _layout"
+grep -qE "^set-hook -g window-resized .*bk _layout #\{q:session_name\}" "$ROOT/tmux/bk.conf"; check $? "bk.conf registra window-resized → bk _layout"
 check_eq "$(grep -c 'set-hook.*client-resized' "$ROOT/bin/bk")" "0" "bk ya no registra client-resized por sesión"
 
 # bash y python leen lo mismo, con valores que NO son los de por defecto (sino da igual de dónde los saquen)

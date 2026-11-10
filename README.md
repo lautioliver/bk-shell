@@ -158,9 +158,12 @@ A 400k le pide al agente el resumen con la plantilla de `lib/handoff.py` (ver *S
 ### Baranda de tmux (opcional)
 
 `lib/tmux_guard.py` es un hook `PreToolUse` de Claude Code para que un agente no tire tu tmux por error: frena
-`tmux kill-server` que no apunta a otro servidor (`-L`, `-S` o `env -u TMUX`; con la variable `TMUX` definida,
-`TMUX_TMPDIR` no alcanza y mata el tuyo), `pkill`/`killall` de tmux y `kill <pid>` del server, y pregunta antes de
-`tmux kill-session` de `agents` o de un `bk-…`. Es contra accidentes, no contra quien quiera esquivarlo. El
+`tmux kill-server` que no apunta a otro servidor (`-L`, `-S`, `env -u TMUX tmux …` o un `unset TMUX` antes; con
+la variable `TMUX` definida, `TMUX_TMPDIR` no alcanza y mata el tuyo). `env -u TMUX` y `TMUX=` valen solo para el
+comando que les sigue: en `env -u TMUX bash tests/run.sh; tmux kill-server` el segundo va a tu servidor y se frena.
+También frena `pkill`/`killall` de tmux, `kill <pid>` del server y `kill` de lo que da `pgrep`/`pidof`/`grep` de
+tmux (`kill $(pgrep tmux)`, `pgrep tmux | xargs kill`), y pregunta antes de `tmux kill-session` de `agents` o de
+un `bk-…`. Es contra accidentes, no contra quien quiera esquivarlo. El
 instalador no lo registra: si lo querés, sumalo a mano en `~/.claude/settings.json`:
 
 ```json
@@ -223,7 +226,9 @@ bk help            # todo lo demás
 - Las proporciones salen de `lib/layout.conf` (tira, riel y cuánto no cede el chat). Al cambiar el tamaño de la
   ventana (el hook `window-resized` de `tmux/bk.conf`) el riel se achica para dejarle al chat 80 columnas y, si
   no entra, el chat pasa a pantalla completa con el zoom de tmux hasta que vuelve a haber lugar; un zoom hecho a
-  mano no se toca.
+  mano no se toca. Acomoda de a uno por sesión (un lock en `$TMPDIR` con el pid del dueño: vence solo si ese
+  proceso murió). Los hooks y atajos de `tmux/bk.conf` le pasan a sh el nombre de la sesión con `#{q:…}`: un
+  nombre con espacios, `;` o `$(…)` no se parte ni se ejecuta.
 - Antes de lanzar un agente, en macOS, bk mira la memoria libre (`memory_pressure`): con menos de
   `BK_MEM_MIN` % (15) no lanza, porque sin memoria el sistema puede matar al server de tmux con todo adentro.
   `BK_FORCE=1` lo saltea; en Linux no frena.
