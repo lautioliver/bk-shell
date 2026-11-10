@@ -20,6 +20,9 @@ import termios
 import time
 import tty
 
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import gentle as G  # noqa: E402  (los colores del tema)
+
 SOCK, SONG = sys.argv[1], sys.argv[2]
 CACHE = os.environ.get("BK_SONG_CACHE") or os.path.expanduser("~/.cache/bk")
 HISTORY_ROWS = 3          # últimos temas que se guardan (se ven con bk song hist)
@@ -30,17 +33,14 @@ CURVE = 2.2               # >1 aplasta lo sostenido: picos y valles como un perf
 SCALE_SECONDS = 6         # ventana para la escala automática (las radios de techno vienen muy comprimidas)
 HEADER_ROWS, FOOTER_ROWS = 4, 5   # tema/datos/cita/vacía arriba; vacía/estado/radios/vacía/"a continuación" abajo
 
-# Paletas por fondo de terminal. BANDS: el color del perfil por altura, de abajo (apagado) a arriba (rosa).
-PALETTES = {
-    "dark": {
-        "BANDS": [(122, 102, 112), (168, 148, 158), (242, 184, 216), (232, 150, 200)],
-        "VIOLET": (232, 150, 200), "DIM": (150, 136, 146), "TEXT": (232, 222, 230), "PINK": (240, 149, 200),
-    },
-    "light": {
-        "BANDS": [(150, 130, 140), (120, 100, 112), (214, 120, 170), (184, 70, 140)],
-        "VIOLET": (184, 70, 140), "DIM": (111, 104, 128), "TEXT": (46, 42, 54), "PINK": (142, 79, 117),
-    },
-}
+# Paletas por fondo de terminal (no por `bk theme`: la UI puede correr en otra terminal), con los colores de
+# gentle: dark = NIGHT, light = DAY. BANDS: el color del perfil por altura, de abajo (apagado) a arriba (rosa).
+def _from(pal):
+    return {"BANDS": [G.rgb(h) for h in G.ramp(4, "muted", "rose", pal)], "VIOLET": G.rgb(pal["rose"]),
+            "DIM": G.rgb(pal["muted"]), "TEXT": G.rgb(pal["text"]), "PINK": G.rgb(pal["rose"])}
+
+
+PALETTES = {"dark": _from(G.NIGHT), "light": _from(G.DAY)}
 BANDS = VIOLET = DIM = TEXT = PINK = None
 
 

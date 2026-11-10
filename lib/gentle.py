@@ -78,9 +78,15 @@ def to256(h):
     return 232 + gv if gd < cd else cube
 
 
-def ramp(n, lo="tint", hi="rose"):
-    """n hex de `lo` a `hi` de la paleta del tema (para mapas de calor)."""
-    a, b = P[lo], P[hi]
+def rgb(h):
+    """(r, g, b) de un hex."""
+    h = h.lstrip("#")
+    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def ramp(n, lo="tint", hi="rose", pal=None):
+    """n hex de `lo` a `hi` de la paleta del tema, o de `pal` (para mapas de calor y perfiles)."""
+    a, b = (pal or P)[lo], (pal or P)[hi]
     ch = lambda s, i: int(s[i:i + 2], 16)
     return ["%02X%02X%02X" % tuple(round(ch(a, i) + (ch(b, i) - ch(a, i)) * k / max(1, n - 1)) for i in (0, 2, 4))
             for k in range(n)]
