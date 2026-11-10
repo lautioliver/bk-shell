@@ -75,6 +75,75 @@ class PaletaUnica(unittest.TestCase):
         self.assertEqual(mal, [], "colores fuera de gentle.py: usá G.curses_attrs() o G.ROSE…")
 
 
+class EstadosUnicos(unittest.TestCase):
+    """La tira, el riel, el monitor y los overlays dicen lo mismo de cada estado: gentle.STATES."""
+
+    def test_cada_estado_tiene_su_glifo_salvo_los_que_son_lo_mismo(self):
+        # sin esto, "trabajando" y "te espera" volverían a distinguirse solo por el color
+        por_glifo = {}
+        for k, (g, _, _) in G.STATES.items():
+            por_glifo.setdefault(g, []).append(k)
+        iguales = {"!": ["waiting", "permission"], "●": ["working", "trust"], "·": ["ended", "none"]}
+        for g, ks in por_glifo.items():
+            self.assertEqual(ks, iguales.get(g, ks[:1]), g)
+        # y los pares que no pueden confundirse tienen glifo o color distinto
+        for a, b in (("working", "waiting"), ("working", "question"), ("question", "permission"),
+                     ("done", "idle"), ("working", "stale")):
+            self.assertNotEqual(G.STATES[a][::2], G.STATES[b][::2], (a, b))
+
+    def test_state_ui_con_estado_desconocido_o_vacio(self):
+        self.assertEqual(G.state_ui("rarisimo"), ("·", "rarisimo", "muted"))
+        self.assertEqual(G.state_ui(None), ("·", "sin estado", "muted"))
+
+    def test_los_colores_de_los_estados_existen_en_la_paleta(self):
+        for k in G.STATES:
+            g, txt, c = G.state_ansi(k)
+            self.assertIn(G.STATES[k][2], G.STATE_COLOR, k)
+            self.assertEqual(c, getattr(G, G.STATE_COLOR[G.STATES[k][2]]), k)
+
+    def test_la_tira_usa_la_tabla(self):
+        attrs = {n: i + 1 for i, n in enumerate(G.CURSES_NAMES)}
+        for st in ("working", "background", "stale", "question", "permission", "waiting", "none", "idle", "done"):
+            g, a = sidebar.dot_for(st, 0, attrs)
+            self.assertEqual(a, attrs[G.STATES[st][2]], st)
+            if st not in ("working", "background"):
+                self.assertEqual(g, G.STATES[st][0], st)
+        self.assertNotEqual(sidebar.dot_for("working", 0, attrs)[0], sidebar.dot_for("working", 1, attrs)[0])  # gira
+
+    def test_el_riel_usa_la_tabla(self):
+        for st in ("working", "background", "waiting", "done", "idle", "error", "trust", "question", "permission"):
+            self.assertEqual(rail.state_row(st), G.state_ansi(st), st)
+
+    def test_agents_view_y_sessions_usan_la_tabla(self):
+        import agents_view as AV, sessions as SE
+        for st in ("working", "waiting", "done", "idle", "trust", "question", "permission"):
+            g, txt, col = G.state_ansi(st)
+            self.assertEqual(AV.state_style(st), (f"{g} {txt}", col), st)
+        for k, txt in SE.STATE_TXT.items():
+            self.assertEqual(txt, G.STATES[k][1], k)
+
+    def test_monitor_y_lista_de_agentes_usan_la_tabla(self):
+        import monitor as MO
+        base = {"asks": False, "why": "", "state": "idle", "kind": "agent", "mins": 0}
+        casos = [({"state": "working"}, "working"), ({"state": "background"}, "background"),
+                 ({"state": "done"}, "done"), ({"state": "idle"}, "idle"), ({"state": ""}, "none"),
+                 ({"asks": True, "why": "pide permiso"}, "permission"), ({"asks": True, "why": "elegí"}, "question")]
+        for extra, key in casos:
+            g, c, _ = MO.state_of({**base, **extra})
+            self.assertEqual((g, c), G.state_ansi(key)[::2], key)
+        g, c, t = MO.state_of({**base, "state": "working", "mins": 60})
+        self.assertEqual((g, c), G.state_ansi("stale")[::2])
+        self.assertEqual(MO.state_of({**base, "kind": "chat"})[0], "◇")   # un chat se ve distinto de un agente
+        # bk ls: glifo y color del estado, el chat con su rombo
+        ag = {**base, "short": "x", "win": "i1", "title": "t", "num": "1", "ref": "", "project": "p", "queued": 0,
+              "question": "", "note": ""}
+        for st in ("working", "done", "idle"):
+            ln = AG.line({**ag, "state": st}, color=False)
+            self.assertTrue(ln.startswith(G.STATES[st][0] + " "), (st, ln))
+        self.assertIn(G.state_ansi("working")[2], AG.line({**ag, "state": "working"}))
+        self.assertTrue(AG.line({**ag, "state": "working", "kind": "chat"}, color=False).startswith("◇ "))
+
+
 class Sidebar(unittest.TestCase):
     def test_estados(self):
         st = {"%1": {"state": "waiting", "tool": "AskUserQuestion"}, "%2": {"state": "waiting", "tool": "Bash"},

@@ -95,11 +95,9 @@ def agents(by_pane):
     return live, ended
 
 
-STATE_UI = {  # estado -> (glifo, texto, color)
-    "working": ("●", "working", IRIS), "background": ("◐", "2º plano", AMBER),
-    "waiting": ("●", "te espera", RED), "done": ("✓", "listo", GREEN), "idle": ("·", "libre", MUTED),
-    "error": ("✗", "error", RED),
-}
+def state_row(state):
+    """(glifo, texto, color ANSI) de un estado, los de gentle.STATES (la misma tabla que la tira y el monitor)."""
+    return G.state_ansi(state)
 
 
 def inner(W):
@@ -234,19 +232,20 @@ def card_agents(W, live, ended, here_sid=None):
     live = sorted(live, key=lambda a: not asks(a))   # los que te esperan, primero
     for a in live:
         s = a["s"]
-        g, txt, col = STATE_UI.get(s.get("state"), ("·", s.get("state") or "—", MUTED))
+        g, txt, col = state_row(s.get("state"))
         if s.get("state") == "waiting":
-            g, txt = ("?", "te pregunta") if wait_kind(s) == "question" else ("!", "pide permiso")
+            g, txt, col = state_row("question" if wait_kind(s) == "question" else "permission")
         if s.get("tool") == "confianza":
-            g, txt, col = "●", "confiá carpeta", RED
+            g, txt, col = state_row("trust")
         if s.get("state") == "background" and s.get("background"):
             txt = f"{s['background']} en 2º plano"
         if a.get("_q"):
-            g, txt, col = "?", "te pregunta", AMBER
+            g, txt, col = state_row("question")
         idle = time.time() - s.get("ts", time.time())
         if s.get("state") == "working" and s.get("tool") != "confianza":
             if idle > STALE:
-                g, col, txt = "⚠", AMBER, f"¿trabado? {int(idle // 60)}m quieto"
+                g, _, col = state_row("stale")
+                txt = f"¿trabado? {int(idle // 60)}m quieto"
             else:
                 g = SPIN[TICK[0] % len(SPIN)]
         elif s.get("state") == "background":

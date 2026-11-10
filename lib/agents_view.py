@@ -18,10 +18,14 @@ SHELLS = {"zsh", "bash", "sh", "fish", "-zsh", "login"}
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 
 RST, BOLD, DIM = "\033[0m", "\033[1m", "\033[2m"
-MAUVE, GREEN, YELLOW, RED, BLUE, GRAY = G.ROSE, G.GREEN, G.AMBER, G.RED, G.IRIS, G.MUTED
-STATE_STYLE = {"working": ("● trabajando", YELLOW), "waiting": ("● te espera", RED),
-               "background": ("◐ en 2º plano", YELLOW),
-               "done": ("✓ listo", GREEN), "idle": ("· libre", GRAY)}
+MAUVE = G.ROSE
+
+
+def state_style(state):
+    """("● trabajando", color ANSI): glifo y texto de gentle.STATES."""
+    g, txt, col = G.state_ansi(state)
+    return f"{g} {txt}", col
+
 
 
 def sh(*a):
@@ -116,9 +120,9 @@ def model(m):
 
 def header(a, W):
     s = a["state"]
-    txt, col = STATE_STYLE.get(s.get("state"), (s.get("state") or "", GRAY))
+    txt, col = state_style(s.get("state"))
     if s.get("tool") == "confianza":
-        txt, col = "● confiá la carpeta", RED
+        txt, col = state_style("trust")
     q = a.get("queued", 0)
     if q:   # bk say encolado (ADR-005 D8): se lo escribe al terminar el turno
         txt += f" · ✉{q}"
@@ -147,14 +151,14 @@ def frame(W, H):
         for k, a in enumerate(shown):
             n = room - each * k if k == len(shown) - 1 else each
             s_ = a["state"]
-            txt, col = STATE_STYLE.get(s_.get("state"), (s_.get("state") or "", GRAY))
+            txt, col = state_style(s_.get("state"))
             if s_.get("state") == "waiting":
                 q = (s_.get("wait") or ("question" if s_.get("tool") == "AskUserQuestion" else "")) == "question"
-                txt = "? te pregunta" if q else "! pide permiso"
+                txt, col = state_style("question" if q else "permission")
             if s_.get("tool") == "confianza":
-                txt, col = "● confiá la carpeta", RED
+                txt, col = state_style("trust")
             busy = s_.get("state") in ("working", "background")
-            frame_c = G.RED if s_.get("state") == "waiting" else G.IRIS if busy else G.FRAME
+            frame_c = G.RED if s_.get("state") == "waiting" else G.IRIS if busy else G.FRAME   # rojo si espera, iris si trabaja
             content = n - 2
             lines = body(a["pane"])[-content:] if content > 0 else []
             rows = [""] * (content - len(lines)) + lines

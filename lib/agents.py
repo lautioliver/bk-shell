@@ -396,7 +396,8 @@ def label(a, width=46):
 
 
 def line(a, i=None, color=True):
-    mark = "?" if a["asks"] else ("●" if a["state"] == "working" else "○")
+    key = ("permission" if a["why"] == "pide permiso" else "question") if a["asks"] else (a["state"] or "none")
+    mark, _, tcol = G.state_ansi(key)   # glifo y color de gentle.STATES, los mismos que en la tira
     if a["asks"]:
         status = a["why"] + (f": «{short(a['question'], 60)}»" if a["question"] else "")
     else:
@@ -414,7 +415,7 @@ def line(a, i=None, color=True):
         mark = "◇"
     if not color:
         return f"{num}{mark} {name:<14} {label(a):<46}  {status}"
-    col = AMBER if a["asks"] else (GREEN if a["state"] == "working" else DIM)
+    col = tcol
     return f"{BOLD}{num}{R}{col}{mark}{R} {BOLD}{name:<14}{R} {label(a):<46}  {col}{status}{R}"
 
 

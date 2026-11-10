@@ -391,21 +391,23 @@ def state_of(a, mon=None):
     if a.get("note"):    # su tarea ya cerró: eso manda sobre el estado viejo del pane
         g = a["note"][:1] if a["note"][:1] in "✓⚠✕" else "✓"
         return g, (AMBER if g == "⚠" else RED if g == "✕" else MUTED), "terminó"
+    def tok(k, text=None):   # glifo, color y texto de gentle.STATES (la misma tabla que la tira y el riel)
+        g, t, c = G.state_ansi(k)
+        return g, c, text or t
     if a["asks"]:
         if a["why"] == "pide permiso":
-            return "!", RED, "pide permiso"
-        return "?", AMBER, a["why"] or "te pregunta"
+            return tok("permission")
+        return tok("question", a["why"])
     if a["state"] == "waiting":
-        return "!", RED, a["why"] or "te espera"
+        return tok("waiting", a["why"])
     if a["state"] == "working":
         if a.get("mins", 0) * 60 >= STALE_WARN:
-            return "⚠", AMBER, f"¿trabado? {ago(a['mins'])} quieto"
-        return "●", GREEN, "trabajando"
+            return tok("stale", f"¿trabado? {ago(a['mins'])} quieto")
+        return tok("working")
     if a["state"] == "background":
-        return "◐", IRIS, "en 2º plano"
-    if a["kind"] == "chat":
-        return "◇", MUTED, {"done": "listo", "idle": "libre"}.get(a["state"], a["state"] or "sin estado")
-    return "○", MUTED, {"done": "listo", "idle": "libre"}.get(a["state"], a["state"] or "sin estado")
+        return tok("background")
+    g, c, t = tok(a["state"] or "none")
+    return ("◇" if a["kind"] == "chat" else g), c, t
 
 
 def task_cell(t, queued=0):

@@ -23,7 +23,7 @@ quedó sin commitear, en una sola sesión de tmux.
 │●│   ves acá al costado                     │                       │
 │2│                                          │                       │
 └─┴──────────────────────────────────────────┴───────────────────────┘
- ↑ tira: workspaces y agentes (● trabajando · ● rojo te espera · ○ libre)
+ ↑ tira: workspaces y agentes (⠋ trabajando · ! te espera o pide permiso · ? te pregunta · ✓ listo · ○ libre)
 ```
 
 ## Qué trae
