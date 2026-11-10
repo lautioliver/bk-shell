@@ -101,7 +101,7 @@ def state_row(state):
 
 
 def inner(W):
-    return W - 5 if G.ui()["cards"] == "float" else W - 4
+    return G.inner(W)
 
 
 def roles_profile(top):

@@ -5,6 +5,9 @@
 set -euo pipefail
 
 WS="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+# Proporciones del workspace (SIDE_W, RAIL_PCT, RAIL_MIN): lib/layout.conf, la misma fuente que lib/gentle.py
+# shellcheck source=lib/layout.conf
+. "$WS/lib/layout.conf"
 SESSION="${BK_SESSION:-agents}"
 STATE_DIR="${BK_STATE_DIR:-$HOME/.cache/bk/agents}"
 export BK_STATE_DIR="$STATE_DIR"   # lib/agents.py lee el mismo estado
@@ -662,10 +665,10 @@ workspace() {
     [ -z "$cx" ] || { BK_FROM="$WS_SESSION" account_use "$cx" >/dev/null; }
     tmux set-environment -t "$WS_SESSION" BK_PROJECT "$top"
     [ -z "${BK_WS_NAME:-}" ] || tmux set-option -t "$WS_SESSION" @bk_name "$BK_WS_NAME"
-    rail=$(tmux split-window -d -P -F '#{pane_id}' -h -l 34% -t "$chat" -c "$dir" -e "BK_PROJECT=$top" "bk rail")
+    rail=$(tmux split-window -d -P -F '#{pane_id}' -h -l "${RAIL_PCT}%" -t "$chat" -c "$dir" -e "BK_PROJECT=$top" "bk rail")
     # Tira izquierda: sesiones activas (workspaces y agentes), a lo Gentle Shell 4
     local side
-    side=$(tmux split-window -d -P -F '#{pane_id}' -hb -l 5 -t "$chat" -c "$dir" "bk sidebar")
+    side=$(tmux split-window -d -P -F '#{pane_id}' -hb -l "$SIDE_W" -t "$chat" -c "$dir" "bk sidebar")
     local p
     for p in "$chat" "$rail" "$side"; do tmux set-option -p -t "$p" allow-set-title off >/dev/null 2>&1; done
     tmux select-pane -t "$chat" -T "✿ chat"
@@ -955,7 +958,7 @@ ws_footer() {
   printf '∗ %s %s#[default] · %s ≈API · usage alt+u' "${act:-0}" "$word" "${u:-—}"
 }
 
-# Proporciones: riel derecho 34 % (mínimo 46 columnas)
+# Proporciones (lib/layout.conf): riel derecho RAIL_PCT % del ancho, mínimo RAIL_MIN columnas; tira de SIDE_W
 ws_layout() {
   set +euo pipefail
   local t="${1:-$WS_SESSION}:main" W rail w side
@@ -963,9 +966,9 @@ ws_layout() {
   [ -n "$W" ] || return 0
   rail=$(tmux list-panes -t "$t" -F '#{pane_id} #{pane_start_command}' | awk '/bk rail/{print $1; exit}')
   side=$(tmux list-panes -t "$t" -F '#{pane_id} #{pane_start_command}' | awk '/bk sidebar/{print $1; exit}')
-  w=$((W * 34 / 100)); [ "$w" -lt 46 ] && w=46
+  w=$((W * RAIL_PCT / 100)); [ "$w" -lt "$RAIL_MIN" ] && w=$RAIL_MIN
   [ -n "$rail" ] && tmux resize-pane -t "$rail" -x "$w"
-  [ -n "$side" ] && tmux resize-pane -t "$side" -x 5
+  [ -n "$side" ] && tmux resize-pane -t "$side" -x "$SIDE_W"
   return 0
 }
 

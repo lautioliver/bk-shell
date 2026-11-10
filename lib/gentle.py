@@ -14,6 +14,23 @@ ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 UI_FILE = os.path.expanduser("~/.config/bk/ui.json")
 GHOSTTY = os.path.expanduser("~/Library/Application Support/com.mitchellh.ghostty/config.ghostty")
 DEFAULTS = {"cards": "float", "density": "comfortable", "rail": "right", "header": "top"}
+LAYOUT_FILE = os.path.join(os.path.dirname(os.path.realpath(__file__)), "layout.conf")
+
+
+def layout():
+    """Las proporciones de lib/layout.conf (NOMBRE=número; bin/bk lo carga con `source`): SIDE_W, RAIL_PCT, RAIL_MIN."""
+    out = {}
+    for l in open(LAYOUT_FILE, encoding="utf-8"):
+        m = re.match(r"([A-Z_]+)=(\d+)", l)
+        if m:
+            out[m.group(1)] = int(m.group(2))
+    return out
+
+
+LAYOUT = layout()
+SIDE_W, RAIL_PCT, RAIL_MIN = LAYOUT["SIDE_W"], LAYOUT["RAIL_PCT"], LAYOUT["RAIL_MIN"]
+# Margen horizontal de una tarjeta: float = margen + ▎ + espacio … espacio + margen; neon = ╭│ … │╮ con un espacio a cada lado
+CARD_PAD = {"float": 5, "neon": 4}
 
 
 def ui():
@@ -188,7 +205,7 @@ def lr(left, right, width):
 
 def _float(title, rows, width, accent, glyph, right, compact):
     """Panel float: margen de 1, fondo tintado, barra ▎ del color del tono, aire arriba y abajo."""
-    inner = width - 5                     # margen + ▎ + espacio … espacio + margen
+    inner = width - CARD_PAD["float"]
     def paint(content):
         # El fondo se re-aplica después de cada RST interno para que el panel quede parejo
         body = fit(content, inner).replace(RST, RST + TINT)
@@ -207,7 +224,7 @@ def _float(title, rows, width, accent, glyph, right, compact):
 
 
 def _neon(title, rows, width, color, accent, glyph, right):
-    inner = width - 4
+    inner = width - CARD_PAD["neon"]
     head = f"{accent}{glyph} {BOLD}{title}{RST}"
     tr = f" {MUTED}{right}{RST} " if right else ""
     fill = width - 4 - vlen(head) - vlen(tr) - 1
@@ -226,6 +243,11 @@ def card(title, rows, width, color=None, accent=None, glyph="✿", right=""):
     if conf["cards"] == "neon":
         return _neon(title, rows, width, color or FRAME, accent, glyph, right)
     return _float(title, rows, width, tone, glyph, right, conf["density"] == "compact")
+
+
+def inner(width):
+    """Columnas de texto que caben en una tarjeta de `width` (según el estilo elegido): lo que `card` no corta."""
+    return width - CARD_PAD["float" if ui()["cards"] == "float" else "neon"]
 
 
 def section(label, value, width, label_w=9):
