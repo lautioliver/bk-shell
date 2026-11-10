@@ -54,7 +54,7 @@ CACHE = os.environ.get("BK_CACHE_DIR", os.path.expanduser("~/.cache/bk"))
 LOG = os.path.join(CACHE, "monitor-events.jsonl")
 CLEARED = os.path.join(CACHE, "monitor-cleared")   # hasta cuándo limpiaste los desvíos (c o bk monitor --clear)
 SOUND_OFF = os.path.join(os.environ.get("BK_CONFIG_DIR", os.path.expanduser("~/.config/bk")), "sound")
-VAULT_DATA = os.path.join(os.path.expanduser(os.environ.get("BARRILETE_VAULT", "~/Documents/Obsidian Vault")), "agents", "data")
+VAULT_DATA = os.path.join(L.vault(), "agents", "data") if L and L.vault() else ""   # BARRILETE_VAULT; sin vault, no anota
 TO_VAULT = {"loop", "stale_grave", "ci_claim"}   # los que bk learn no puede ver en los transcripts: el monitor los anota
 STALE_WARN, STALE_GRAVE = 600, 1200      # segundos "trabajando" sin eventos del hook
 GRAVE_SOUND, GRAVE_VOLUME = "Hero", "2.5"   # largo y llamativo; afplay acepta más de 1 (el sonido del sistema es bajo)
@@ -280,7 +280,7 @@ class Monitor:
         except OSError:
             pass
         self.events.sort(key=lambda x: x["ts"])
-        if typ in TO_VAULT and not self.quiet and os.path.isdir(VAULT_DATA) and not os.environ.get("BK_MONITOR_DRY"):
+        if typ in TO_VAULT and not self.quiet and VAULT_DATA and os.path.isdir(VAULT_DATA) and not os.environ.get("BK_MONITOR_DRY"):
             day = time.strftime("%Y-%m-%d", time.localtime(e["ts"]))
             row = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(e["ts"])), "project": who,
                    "session": "monitor", "model": "-", "role": "-", "type": typ,
@@ -362,6 +362,8 @@ class Monitor:
 def week_average():
     """Desvíos por día de los 7 días anteriores, según los eventos de bk learn en el vault."""
     counts = {}
+    if not VAULT_DATA:
+        return 0
     for f in glob.glob(os.path.join(VAULT_DATA, "events-*.jsonl")):
         try:
             for l in open(f):

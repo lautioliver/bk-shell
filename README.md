@@ -101,6 +101,16 @@ quedó sin commitear, en una sola sesión de tmux.
 - **Checkpoints**: `bk checkpoints` junta lo que solo vos podés hacer, con el comando para hacerlo: planes por aprobar,
   reviewers propuestos, PRs que te pidieron revisar, PRs tuyos listos para mergear y lecciones propuestas. Es la misma
   lista que *Te esperan* en `bk monitor` (`--json` para la barra u otros scripts). No está en el riel, para no llenarlo.
+- **Lecciones de los desvíos** (`bk learn`): lee los transcripts de Claude Code, guarda los desvíos de los agentes
+  (barandas, hooks, permisos rechazados, correcciones, hallazgos de review…) en un vault, una carpeta de notas en
+  markdown que elegís con `BARRILETE_VAULT` (sin ella, estos comandos te dicen qué poner y salen con error), y con 3
+  repeticiones en 14 días propone una lección (`agents/lessons/`, `status: proposed`). `bk lessons` lista las que
+  esperan; las que marcás `accepted` pasan a `agents/INDEX.md`, que pueden leer los agentes. `bk learn effect` mide si
+  cada regla aceptada bajó los hallazgos de review de su clase (antes/después por ronda; `agents/efecto.md`) y
+  `bk metrics` da, por PR, costo, rondas de review, desvíos y bloqueantes. Las retros y reviews de GitHub salen de los
+  repos que pongas en `~/.config/bk/retros.json` (`{"repos": ["~/mi-proyecto"]}`); sin ese archivo, `bk learn` y `bk learn effect` no
+  salen a GitHub (`bk metrics` sí: consulta con `gh` los repos de las sesiones que encuentra).
+  `bk learn` no corre solo: corrélo a mano o desde tu propio cron.
 - **Cuentas por sesión**: `bk account new claude trabajo` crea otra cuenta de Claude Code (o `codex`) y hace su
   login; `bk account use trabajo` la pone en esta sesión: los agentes y chats que lances desde acá corren con ella,
   y otra sesión puede usar otra al mismo tiempo. Las conversaciones son las mismas (`/resume` y `alt+s` ven todas);

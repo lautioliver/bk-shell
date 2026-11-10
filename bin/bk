@@ -89,6 +89,11 @@ uso: bk [comando] [--dry-run]
                     con clic en una fila └ de la tira
   term [dir]        terminal rápida del proyecto, persistente (alt+x la muestra y la esconde)
   tokens            tokens del día y costo equivalente en API, por modelo y proyecto
+  metrics [--repo R] por PR: costo, rondas de review, desvíos y bloqueantes (--json, --refresh)
+  learn             registra los desvíos de los agentes en el vault (BARRILETE_VAULT) y propone lecciones
+  lessons           lecciones por revisar (status: proposed) en el vault
+  learn effect      ¿las reglas aceptadas bajan los hallazgos que dicen evitar? antes/después por ronda de
+                    review (agents/efecto.md); las que no bajan, para reescribir o retirar
 
 Los comandos de agentes se corren dentro de un proyecto Barrilete.
 Contexto alto (ámbar desde 200k, rojo desde 400k): ▪ en la tira, en el riel y en la columna CTX de bk monitor;
@@ -1321,6 +1326,29 @@ role_mode() {
   printf '%s' "${mode:-bk}"
 }
 
+# Vault de bk learn / lessons / learn effect / metrics: BARRILETE_VAULT (BK_VAULT, el nombre viejo). Sin default.
+need_vault() {
+  local v="${BARRILETE_VAULT:-${BK_VAULT:-}}"
+  [ -n "$v" ] || die "falta el vault: exportá BARRILETE_VAULT con la carpeta de notas (markdown) donde bk learn guarda desvíos y lecciones, por ejemplo  export BARRILETE_VAULT=~/notas"
+  case "$v" in "~"/*) v="$HOME/${v#\~/}" ;; esac
+  printf '%s' "$v"
+}
+
+lessons() {
+  local vault f n=0
+  vault=$(need_vault) || exit 1
+  [ -d "$vault" ] || die "no existe el vault $vault (BARRILETE_VAULT)"
+  for f in "$vault"/agents/lessons/*.md; do
+    [ -e "$f" ] || continue
+    grep -q '^status:[[:space:]]*proposed' "$f" || continue
+    printf '  %s  (%s veces)  %s\n' "$(basename "$f" .md)" \
+      "$(sed -nE 's/^count:[[:space:]]*([0-9]+).*/\1/p' "$f")" "$(sed -nE 's/^scope:[[:space:]]*([^[:space:]]+).*/\1/p' "$f")"
+    n=$((n+1))
+  done
+  if [ "$n" -eq 0 ]; then echo "no hay lecciones por revisar"
+  else printf '\n%s por revisar en %s/agents/lessons (status: accepted + regla → INDEX.md; retired → descartar)\n' "$n" "$vault"; fi
+}
+
 roles() {
   local root; root=$(git rev-parse --show-toplevel 2>/dev/null || true)
   for r in planner orchestrator implementer implementer-light reviewer; do
@@ -1500,6 +1528,11 @@ case "${1:-}" in
   mode)        shift; [ -n "${1:-}" ] || die "bk mode <rol>"
                role_mode "$1" "$(git rev-parse --show-toplevel 2>/dev/null || true)"; echo ;;
   tokens)      exec python3 "$WS/lib/usage.py" ;;
+  learn)       shift; need_vault >/dev/null || exit 1
+               [ "${1:-}" = effect ] && { shift; exec python3 "$WS/lib/effect.py" "$@"; }
+               exec python3 "$WS/lib/learn.py" "$@" ;;
+  lessons)     lessons ;;
+  metrics)     shift; need_vault >/dev/null || exit 1; exec python3 "$WS/lib/metrics.py" "$@" ;;
   ""|ws)       shift || true; workspace "${1:-}" ;;
   open)        shift; cmd_open "${1:-}" ;;
   rerun)       shift; cmd_rerun "$@" ;;

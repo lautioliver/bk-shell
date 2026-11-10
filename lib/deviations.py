@@ -13,6 +13,16 @@ import json
 import os
 import re
 
+VAULT_HELP = ("falta el vault: exportá BARRILETE_VAULT con la carpeta de notas (markdown) donde bk learn "
+              "guarda desvíos y lecciones, por ejemplo  export BARRILETE_VAULT=~/notas")
+
+
+def vault():
+    """Carpeta del vault de bk learn, lessons, learn effect, metrics y monitor: BARRILETE_VAULT (o BK_VAULT,
+    el nombre viejo de bk metrics). Sin valor por defecto: None si no está definida."""
+    v = os.environ.get("BARRILETE_VAULT") or os.environ.get("BK_VAULT")
+    return os.path.expanduser(v) if v else None
+
 RE_CONTRACT = re.compile(r"^\s*result:\s*(escalate|blockers|question|dropped)\b", re.M)
 RE_FIELD = lambda k: re.compile(rf"^\s*{k}:\s*(\S+)", re.M)
 RE_APPROVE = re.compile(r"^\s*(s[ií]|yes|dale|ok(ay)?|aprob|listo|adelante|go|perfecto|de una|confirm)", re.I)
