@@ -21,6 +21,17 @@ CATS = [
 ]
 
 
+CAT_W = 18        # columna de categorías (izquierda)
+DESC_OFFSET = 36  # la descripción de cada opción empieza tantas columnas después de la lista…
+DESC_MIN = 20     # …y si no le quedan al menos estas, pasa a una línea propia debajo de las opciones
+
+
+def desc_col(W):
+    """Columna de la descripción al lado de cada opción, o None si no entra (se muestra debajo)."""
+    col = CAT_W + DESC_OFFSET
+    return col if W - col - 1 >= DESC_MIN else None
+
+
 def current(key, conf):
     if key == "theme":
         return subprocess.run([BK, "theme"], capture_output=True, text=True).stdout.split(" ")[0].strip()
@@ -65,7 +76,7 @@ def ui(scr):
         scr.erase()
         scr.addnstr(0, 1, "✿ Customize", W - 2, ROSE | curses.A_BOLD)
         scr.addnstr(1, 1, "VISUAL · CATEGORÍAS", W - 2, MUTED)
-        LW = 18
+        LW = CAT_W
         for i, (name, _, _) in enumerate(CATS):
             attr = curses.A_REVERSE if (i == cat and pane == 0) else (PETAL | curses.A_BOLD if i == cat else TEXT)
             scr.addnstr(3 + i, 2, f" {name:<14}", LW - 2, attr)
@@ -78,7 +89,11 @@ def ui(scr):
             label = f"{name}: {val}" + ("  (actual)" if val == cur else "")
             attr = (ROSE | curses.A_BOLD) if (i == opt and pane == 1) else TEXT
             scr.addnstr(3 + i, LW + 2, mark + label, W - LW - 3, attr)
-            scr.addnstr(3 + i, LW + 36, desc, max(0, W - LW - 37), MUTED)
+            dc = desc_col(W)
+            if dc is not None:
+                scr.addnstr(3 + i, dc, desc, max(0, W - dc - 1), MUTED)
+            elif i == opt and pane == 1:   # terminal angosta: la de la opción elegida, debajo de la lista
+                scr.addnstr(3 + len(opts) + 1, LW + 2, desc, max(0, W - LW - 3), MUTED)
         if msg:
             scr.addnstr(H - 3, 2, msg, W - 3, PETAL)
         scr.addnstr(H - 1, 1, "←/→ o tab paneles · ↑/↓ mover · enter aplicar · esc cerrar", W - 2, MUTED)

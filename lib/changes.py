@@ -78,6 +78,13 @@ def diff(item):
     return out[4:] if len(out) > 4 else out or ["(sin diff de texto)"]
 
 
+LIST_MIN, LIST_MAX = 28, 48   # ancho de la lista de archivos: un tercio de la pantalla, entre estos
+
+
+def list_width(W):
+    return max(LIST_MIN, min(LIST_MAX, W // 3))
+
+
 def ui(scr):
     curses.curs_set(0)
     curses.use_default_colors()
@@ -104,7 +111,7 @@ def ui(scr):
             continue
         sel = max(0, min(sel, len(files) - 1))
         cur = items[files[sel]]
-        LW = 0 if full else max(28, min(48, W // 3))
+        LW = 0 if full else list_width(W)
         body_h = H - 2
         if not full:
             # Lista: mantener el elegido a la vista
