@@ -34,6 +34,12 @@ check_eq "$(PATH="$P" "$BK" casa)" "casa:state=$HOME/.cache/bk/agents" \
   "sin BK_PLUGINS, la carpeta es ~/.config/bk/plugins"
 PATH="$P" BK_PLUGINS="$TMP/plugins" "$BK" --dry-run chau y >/dev/null; check $? "las opciones de bk (--dry-run) no tapan al comando propio"
 PATH="$P" BK_PLUGINS="$TMP/plugins" "$BK" falla >/dev/null; check_eq "$?" 7 "el código de salida del comando propio es el de bk"
+# El entorno del comando propio: BK_WS (la raíz de bk), BK_SESSION (la sesión de los agentes) y DRY
+printf '#!/bin/sh\nprintf "ws=%%s ses=%%s dry=%%s" "$BK_WS" "$BK_SESSION" "${DRY-sin}"\n' >"$TMP/plugins/entorno"; chmod +x "$TMP/plugins/entorno"
+ent() { env -u BK_SESSION -u DRY PATH="$P" BK_PLUGINS="$TMP/plugins" "$@"; }
+check_eq "$(ent "$BK" entorno)" "ws=$ROOT ses=agents dry=0" "el comando propio recibe BK_WS, BK_SESSION (agents por defecto) y DRY=0"
+check_eq "$(ent "$BK" --dry-run entorno)" "ws=$ROOT ses=agents dry=1" "con --dry-run, DRY=1"
+check_eq "$(ent DRY=1 BK_SESSION=otra "$BK" entorno)" "ws=$ROOT ses=otra dry=0" "BK_SESSION de quien llama pasa; un DRY=1 del entorno sin --dry-run no"
 out=$(PATH="$P" BK_PLUGINS="$TMP/plugins" "$BK" help)
 case "$out" in uso:*) r=0 ;; *) r=1 ;; esac; check $r "los comandos de bk ganan: bk-help del PATH no tapa bk help"
 case "$out" in *'${BK_PLUGINS:-~/.config/bk/plugins}/foo'*) r=0 ;; *) r=1 ;; esac; check $r "bk help cuenta cómo sumar comandos"

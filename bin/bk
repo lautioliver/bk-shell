@@ -96,12 +96,13 @@ uso: bk [comando] [--dry-run]
                     review (agents/efecto.md); las que no bajan, para reescribir o retirar
 
 Los comandos de agentes se corren dentro de un proyecto Barrilete.
-Contexto alto (ámbar desde 200k, rojo desde 400k): ▪ en la tira, en el riel y en la columna CTX de bk monitor;
+Contexto alto (ámbar desde 200k, rojo desde 400k; BK_CTX_WARN y BK_CTX_HIGH los cambian): ▪ en la tira, en el riel y en la columna CTX de bk monitor;
 lib/context_hook.py se lo avisa al agente (install.sh pregunta si lo registra); a 400k le pide el resumen de handoff.
 Opcional: lib/tmux_guard.py, un hook que frena a un agente que iba a tirar tu servidor de tmux (install.sh pregunta).
 Cada workspace tiene un número fijo (el libre más bajo al crearse; no cambia al cerrar otros): alt+N, la tira,
 el header y bk ls lo usan. Cada agente bk queda colgado en la tira de la ventana que lo lanzó (←3, ←i7).
-Comandos propios: si bk no conoce "bk foo", corre bk-foo del PATH o ${BK_PLUGINS:-~/.config/bk/plugins}/foo.
+Comandos propios: si bk no conoce "bk foo", corre bk-foo del PATH o ${BK_PLUGINS:-~/.config/bk/plugins}/foo,
+con BK_WS (la carpeta de bk), BK_SESSION (la sesión de tmux de los agentes) y DRY=1 si vino --dry-run.
 EOF
 }
 
@@ -361,15 +362,26 @@ launcher_of() {
   fi
 }
 
-# mem_ok: ¿hay memoria para otro agente? Con la memoria agotada, macOS empieza a matar procesos y puede
-# llevarse al server de tmux con todos los chats y agentes. Mira el "memory free percentage" de
-# memory_pressure (el swap usado no baja solo y daría falsas alarmas). Sin memory_pressure (Linux) no frena.
+# mem_free: la memoria libre en %, o nada si no se sabe. Linux: MemAvailable / MemTotal de /proc/meminfo
+# (BK_MEMINFO lo cambia, para los tests); macOS: el "memory free percentage" de memory_pressure (el swap usado
+# no baja solo y daría falsas alarmas).
+mem_free() {
+  local mi="${BK_MEMINFO:-/proc/meminfo}"
+  if [ -r "$mi" ]; then
+    awk '/^MemTotal:/ {t = $2} /^MemAvailable:/ {a = $2} END {if (t > 0 && a != "") printf "%d", a * 100 / t}' "$mi"
+    return 0
+  fi
+  command -v memory_pressure >/dev/null || return 0
+  memory_pressure -Q 2>/dev/null | sed -nE 's/.*free percentage: ([0-9]+)%.*/\1/p'
+}
+
+# mem_ok: ¿hay memoria para otro agente? Con la memoria agotada, el sistema empieza a matar procesos y puede
+# llevarse al server de tmux con todos los chats y agentes. Sin dato (ni /proc/meminfo ni memory_pressure) no frena.
 # BK_MEM_MIN: el mínimo en % (15). BK_FORCE=1 lo saltea.
 mem_ok() {
   [ "${BK_FORCE:-0}" = 1 ] && return 0
-  command -v memory_pressure >/dev/null || return 0
-  local free; free=$(memory_pressure -Q 2>/dev/null | sed -nE 's/.*free percentage: ([0-9]+)%.*/\1/p')
-  [ -n "$free" ] || return 0
+  local free; free=$(mem_free)
+  [[ "$free" =~ ^[0-9]+$ ]] || return 0
   if [ "$free" -lt "${BK_MEM_MIN:-15}" ]; then
     printf 'bk: queda %s%% de memoria libre. Otro agente puede dejar al sistema sin memoria y tirar tmux con todo.\n' "$free" >&2
     printf '    Cerrá algo (agentes listos con bk stop, pestañas del navegador) o forzalo con BK_FORCE=1.\n' >&2
@@ -437,8 +449,9 @@ launch() {
   # La tira lo cuelga de la ventana que lo lanzó
   [ -z "$parent" ] || tmux set-option -w -t "$SESSION:$win" @bk_parent "$parent" >/dev/null
   pre_register "$win" "$pane" "$dir" "$role" "$model" "$ref"
-  # El título del issue/PR para bk ls y la tira (una consulta a GitHub, en segundo plano)
-  (python3 "$WS/lib/agents.py" warm >/dev/null 2>&1 &)
+  # El título del issue/PR para bk ls y la tira (una consulta a GitHub, en segundo plano). BK_NO_WARM=1: no
+  # (los tests: ni ese proceso suelto ni la red)
+  [ "${BK_NO_WARM:-0}" = 1 ] || (python3 "$WS/lib/agents.py" warm >/dev/null 2>&1 &)
   info "lanzado → bk go $win"
 }
 
@@ -1564,5 +1577,8 @@ case "${1:-}" in
   s|sessions)  exec python3 "$WS/lib/sessions.py" ;;
   -h|--help|help) usage ;;
   *) plugin=$(find_plugin "$1") || { usage >&2; exit 2; }
+     # Lo que el comando propio necesita de bk: la raíz del repo (BK_WS, para llamar a sus lib/), la sesión de
+     # tmux de los agentes (BK_SESSION) y DRY=1 si vino --dry-run (si no, 0: un DRY del entorno no se cuela)
+     export BK_WS="$WS" BK_SESSION="$SESSION" DRY
      shift; exec "$plugin" "$@" ;;
 esac

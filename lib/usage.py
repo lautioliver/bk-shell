@@ -74,7 +74,18 @@ def context_tokens(u):
 
 
 # Desde cuánto contexto avisar: ámbar y rojo. Lo usan la tira, el riel, bk monitor y lib/context_hook.py.
-CTX_WARN, CTX_HIGH = 200_000, 400_000
+# BK_CTX_WARN / BK_CTX_HIGH los cambian (en tokens: 150000 o 150k); un valor que no es un número no cuenta.
+def _ctx_env(name, default):
+    v = (os.environ.get(name) or "").strip().lower()
+    try:
+        n = int(float(v[:-1]) * 1000) if v.endswith("k") else int(v)
+    except ValueError:
+        return default
+    return n if n > 0 else default
+
+
+CTX_WARN = _ctx_env("BK_CTX_WARN", 200_000)
+CTX_HIGH = max(_ctx_env("BK_CTX_HIGH", 400_000), CTX_WARN)   # el rojo nunca antes que el ámbar
 _ctx_cache = {}   # ruta -> (tamaño, tokens)
 TAIL = 512 * 1024
 

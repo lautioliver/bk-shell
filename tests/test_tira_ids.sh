@@ -50,6 +50,25 @@ check_eq "$(grep -c '@bk_parent ws:bk-demo-3' "$TMP/tmux.log")" "1" "bk review d
 (cd "$TMP/repo" && FAKE_DISPLAY='otra|||x' TMUX_PANE=%1 BK_FORCE=1 bk review 8 >/dev/null)
 check_eq "$(grep -c '@bk_parent' "$TMP/tmux.log")" "0" "lanzado desde fuera de bk: sin @bk_parent"
 
+# BK_NO_WARM=1 (lo pone tests/lib.sh): launch no deja corriendo "agents.py warm" ni agents.py consulta GitHub.
+# Un python3 falso anota los warm (sin correrlos) y un gh falso anota si lo llaman.
+REALPY=$(command -v python3)
+printf '#!/bin/sh\ncase "$1 $2" in *agents.py\ warm) echo warm >>"%s"; exit 0 ;; esac\nexec "%s" "$@"\n' "$TMP/warm.log" "$REALPY" >"$TMP/fake/python3"
+printf '#!/bin/sh\necho "gh $*" >>"%s"\necho "Un título"\n' "$TMP/gh.log" >"$TMP/fake/gh"
+chmod +x "$TMP/fake/python3" "$TMP/fake/gh"
+warms() { for _ in $(seq 1 30); do [ -s "$TMP/warm.log" ] && break; sleep 0.1; done; { cat "$TMP/warm.log" 2>/dev/null || true; } | wc -l | tr -d ' '; }
+(unset BK_NO_WARM; cd "$TMP/repo" && FAKE_DISPLAY='otra|||x' bk review 9 >/dev/null)   # bk: la función de arriba
+check_eq "$(warms)" "1" "sin BK_NO_WARM, launch corre agents.py warm (el control: el python3 falso lo ve)"
+rm -f "$TMP/warm.log"
+(cd "$TMP/repo" && FAKE_DISPLAY='otra|||x' bk review 10 >/dev/null)
+check_eq "$(warms)" "0" "con BK_NO_WARM=1 (tests/lib.sh), launch no corre agents.py warm"
+rm -f "$TMP/fake/python3"
+git -C "$TMP/repo" remote add origin https://github.com/demo/proyecto.git 2>/dev/null
+title() { PATH="$TMP/fake:$PATH" python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import agents as A; print(A.title_for(sys.argv[2], 7, {}, True) or '-')" "$ROOT/lib" "$TMP/repo"; }
+check_eq "$(title)/$(cat "$TMP/gh.log" 2>/dev/null | wc -l | tr -d ' ')" "-/0" "con BK_NO_WARM=1, title_for no llama a gh"
+check_eq "$(unset BK_NO_WARM; title)/$(wc -l <"$TMP/gh.log" | tr -d ' ')" \
+  "Un título/1" "sin BK_NO_WARM, title_for le pregunta a gh (el control)"
+
 # --- bk _ids / _nth: número fijo por workspace ---
 # list-sessions -F '#{session_created}<TAB>#{session_name}<TAB>#{@bk_id}'
 printf '100\tbk-demo\t2\n200\tbk-otro\t\n300\tterm-x\t\n400\tbk-demo-2\t2\n500\tbk-tres\t5\n' >"$TMP/sessions"

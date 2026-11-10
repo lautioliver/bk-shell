@@ -171,10 +171,13 @@ if command -v tmux >/dev/null; then
   printf '#!/bin/bash\nprintf "¿Sigo?\\n\\n❯ 1. Sí (Recommended)\\n  2. No\\n\\nEnter to select · Esc to cancel\\n"\ncat > "$1"\n' > "$MT/menu.sh"; chmod +x "$MT/menu.sh"
   (
     export TMUX_TMPDIR="$MT/tmux" BK_STATE_DIR="$MT/state" BK_CACHE_DIR="$MT/cache"; unset TMUX
-    tmux new-session -d -s agents -n i225 "$MT/menu.sh $MT/typed"; sleep 0.4
+    tmux new-session -d -s agents -n i225 "$MT/menu.sh $MT/typed"
+    # esperar a que el menú esté en pantalla (hasta 5 s), no un tiempo fijo
+    for _ in $(seq 1 50); do tmux capture-pane -p -t agents:i225 2>/dev/null | grep -q 'Enter to select' && break; sleep 0.1; done
     "$ROOT/bin/bk" say i225 "una aclaración" </dev/null >/dev/null 2>"$MT/err"; echo "texto=$?"
     "$ROOT/bin/bk" say i225 2 </dev/null >/dev/null 2>&1; echo "numero=$?"
-    sleep 0.3; env -u TMUX TMUX_TMPDIR="$MT/tmux" tmux kill-server
+    for _ in $(seq 1 50); do [ -s "$MT/typed" ] && break; sleep 0.1; done   # hasta que el número llegue
+    env -u TMUX TMUX_TMPDIR="$MT/tmux" tmux kill-server
   ) > "$MT/out" 2>&1
   check_eq "$(grep '^texto=' "$MT/out")" "texto=1" "bk say con un menú abierto no manda texto"
   grep -q "1. Sí" "$MT/err"; check $? "y muestra las opciones del menú"

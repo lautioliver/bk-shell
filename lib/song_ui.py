@@ -3,7 +3,9 @@
 agudos, una barra por columna: una curva continua) y abajo solo las estaciones.
 
 Le habla al mpv de `bk song` por su socket IPC. Es solo un control remoto: al salir, la música sigue.
-El gráfico es real: mpv separa el audio en 28 franjas de frecuencia (VIZ en song.sh) y astats mide cada una;
+El gráfico es real: mpv separa el audio en 28 franjas de frecuencia (VIZ en song.sh) y astats mide cada una.
+Ese filtro cuesta CPU, así que solo está mientras la UI está abierta: lo agrega (también al mpv de cada
+estación nueva) y al salir lo saca (viz_on / viz_off; song.sh lo pasa en BK_SONG_VIZ);
 acá se leen ~20 veces por segundo y se interpolan entre franjas para llenar el ancho. Teclas: espacio pausa · g género · 1-9 radio · n/p · f guardar · +/- vol ·
 s cortar · q salir · ? las muestra abajo.
 
@@ -130,6 +132,28 @@ class Mpv:
 
     def get(self, prop):
         return self.cmd("get_property", prop)
+
+
+VIZ = os.environ.get("BK_SONG_VIZ", "")   # "@viz:lavfi=[…]" de song.sh
+
+
+def has_viz(af):
+    return any(isinstance(f, dict) and f.get("label") == "viz" for f in af or [])
+
+
+def viz_on(mpv):
+    """Le pone al mpv que suena el filtro del espectro si no lo tiene. True si lo agregó."""
+    af = mpv.get("af")
+    if not VIZ or not isinstance(af, list) or has_viz(af):
+        return False
+    mpv.cmd("af", "add", VIZ)
+    return True
+
+
+def viz_off(mpv):
+    """Le saca el filtro del espectro (la radio sigue sonando igual, sin gastar CPU en medirla)."""
+    if has_viz(mpv.get("af")):
+        mpv.cmd("af", "remove", "@viz")
 
 
 def song(*args):
@@ -278,6 +302,7 @@ def main():
                 last_info = t0
                 info["alive"] = mpv.get("pid") is not None
                 if info["alive"]:
+                    viz_on(mpv)   # una estación nueva arranca sin el filtro
                     meta = mpv.get("metadata") or {}
                     title = meta.get("icy-title") or meta.get("title") or ""
                     if title and title != info["title"]:
@@ -383,6 +408,7 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
+        viz_off(mpv)
         restore()
         mpv.close()
 

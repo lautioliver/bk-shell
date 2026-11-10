@@ -9,6 +9,7 @@ os.environ["BK_CONFIG_DIR"] = tempfile.mkdtemp()  # ni tu configuración (el son
 os.environ["BARRILETE_VAULT"] = tempfile.mkdtemp()   # ni tu vault (lecciones de bk checkpoints)
 os.environ["BK_PRS_CACHE"] = os.path.join(tempfile.mkdtemp(), "prs.json")   # ni tu caché de PRs
 os.environ["BK_CHECKPOINTS_OFFLINE"] = "1"   # bk checkpoints no consulta GitHub en los tests
+os.environ["BK_NO_WARM"] = "1"   # ni los títulos de issues y PRs (agents.title_for, pr_of_branch)
 import gentle as G          # noqa: E402
 G.UI_FILE = os.path.join(tempfile.mkdtemp(), "ui.json")   # nunca tu ~/.config/bk/ui.json (save_ui lo escribe)
 import rail                 # noqa: E402

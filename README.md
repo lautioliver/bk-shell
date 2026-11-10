@@ -57,7 +57,9 @@ quedó sin commitear, en una sola sesión de tmux.
   cambia el estado. `bk sound off` lo apaga, `bk sound test` los hace sonar.
 - **Radio**: `bk song rock` (o techno, house, reggaeton, cachengue) pone una radio en segundo plano con `mpv`;
   `next`/`prev` pasan de radio dentro del género y `bk song ui` muestra el espectro del sonido en vivo (28 franjas,
-  de graves a agudos) con las radios del género y control con teclas (`?` las muestra).
+  de graves a agudos) con las radios del género y control con teclas (`?` las muestra). El filtro que mide esas
+  franjas cuesta CPU: mpv lo tiene solo mientras `bk song ui` está abierta (lo agrega al abrir y en cada estación
+  nueva, y lo saca al cerrar); la radio de fondo suena sin él.
   `bk song <url>` toca cualquier stream o link de YouTube/SoundCloud (con `yt-dlp`), `bk song fav` guarda la que
   suena entre tus radios y `bk song hist` lista los temas que sonaron. Cuando suena el aviso de un agente, la radio
   baja sola y después vuelve a su volumen.
@@ -121,7 +123,8 @@ quedó sin commitear, en una sola sesión de tmux.
 - **Contexto a la vista**: cada llamada de una sesión vuelve a leer (y a pagar) todo su contexto. Desde 200k
   (ámbar) y 400k (rojo) la tira marca la sesión con `▪` (el número, en el tooltip), el riel muestra el de cada agente
   y el de este chat con la sugerencia de `/clear` o un chat nuevo, y `bk monitor` lo tiene en la columna CTX.
-  Opcional: `lib/context_hook.py` se lo dice al agente (ver *Aviso de contexto*).
+  Los umbrales se cambian con `BK_CTX_WARN` y `BK_CTX_HIGH` (en tokens: `150000` o `150k`; el rojo nunca queda antes
+  que el ámbar). Opcional: `lib/context_hook.py` se lo dice al agente, con los mismos umbrales (ver *Aviso de contexto*).
 - **Dash**: `bk dash` es una franja de estado con dos tablas que se redibujan cada 5 s: los agentes (ventana,
   proyecto, rol, modelo, estado, hace cuánto) y el uso del día por modelo. `bk dash --once` la dibuja una vez.
 - **Stats**: mapa de actividad, modelo favorito, rachas y costo equivalente en API de todo tu historial de Claude Code.
@@ -238,7 +241,9 @@ bk help            # todo lo demás
 - El riel se redibuja cada segundo y solo si algo cambió; con su workspace oculto no arma nada y mira cada 3 s si
   volvió a estar a la vista.
 - Comandos propios, como en git: si `bk` no conoce `bk foo`, corre `bk-foo` del `PATH` o
-  `${BK_PLUGINS:-~/.config/bk/plugins}/foo` (ejecutable) con el resto de los argumentos. Sirve para sumar comandos
+  `${BK_PLUGINS:-~/.config/bk/plugins}/foo` (ejecutable) con el resto de los argumentos y, en el entorno, `BK_WS` (la
+  carpeta de bk, para usar sus `lib/`), `BK_SESSION` (la sesión de tmux de los agentes, `agents` si no la cambiaste) y
+  `DRY=1` si vino `--dry-run` (`DRY=0` si no: el comando decide qué no hacer). Sirve para sumar comandos
   desde otro repo sin tocar este. Los comandos de bk tienen prioridad, y el nombre solo puede tener letras,
   números, `-` y `_`.
 - Las proporciones salen de `lib/layout.conf` (tira, riel y cuánto no cede el chat). Al cambiar el tamaño de la
@@ -247,9 +252,9 @@ bk help            # todo lo demás
   mano no se toca. Acomoda de a uno por sesión (un lock en `$TMPDIR` con el pid del dueño: vence solo si ese
   proceso murió). Los hooks y atajos de `tmux/bk.conf` le pasan a sh el nombre de la sesión con `#{q:…}`: un
   nombre con espacios, `;` o `$(…)` no se parte ni se ejecuta.
-- Antes de lanzar un agente, en macOS, bk mira la memoria libre (`memory_pressure`): con menos de
-  `BK_MEM_MIN` % (15) no lanza, porque sin memoria el sistema puede matar al server de tmux con todo adentro.
-  `BK_FORCE=1` lo saltea; en Linux no frena.
+- Antes de lanzar un agente, bk mira la memoria libre (en Linux, `MemAvailable` de `/proc/meminfo`; en macOS,
+  `memory_pressure`): con menos de `BK_MEM_MIN` % (15) no lanza, porque sin memoria el sistema puede matar al
+  server de tmux con todo adentro. `BK_FORCE=1` lo saltea; sin ninguno de los dos datos no frena.
 - `bk --dry-run` (con `bk`, `bk chat`, `--rama`, `--suelto`, `--desde` o un lanzamiento) dice qué abriría o lanzaría y no
   crea nada: ni sesiones, ni ramas, ni worktrees.
 - `bk s`: el chat de cada workspace se ve como `ws N` (su número fijo, con su color); `x` cierra un agente o,
@@ -262,6 +267,10 @@ bk help            # todo lo demás
 ```bash
 bash tests/run.sh        # hook de estado, bk, tareas, cuentas, instalador y vistas (también corre en CI: macOS y Linux)
 ```
+
+Los tests corren con `BK_NO_WARM=1` (lo pone `tests/lib.sh`): bk no deja corriendo `agents.py warm` al lanzar un
+agente ni consulta a GitHub los títulos de issues y PRs. Fuera de los tests sirve igual si no querés que bk salga
+a la red por eso.
 
 Inspirado en [Gentle Shell](https://github.com/Gentleman-Programming/gentle-shell) de Gentleman Programming.
 Licencia MIT.

@@ -11,7 +11,7 @@
 
 Los chats de los workspaces (bk-kit-2…) también se nombran: por su nombre (bk name / bk chat --nombre),
 por el de /rename o por el título que les puso Claude. resolve los devuelve como chat:<sesión>.
-  agents.py warm                 busca los títulos que falten (bk lo corre al lanzar un agente)
+  agents.py warm                 busca los títulos que falten (bk lo corre al lanzar un agente; BK_NO_WARM=1: no)
 
 resolve/auto/pick imprimen la ventana en stdout. Si no pueden decidir salen con 3 (varios) o 4 (ninguno)
 y explican en stderr; con una terminal, resolve y auto abren el selector en vez de fallar.
@@ -74,7 +74,7 @@ def pr_of_branch(cwd, titles, fetch=True):
     key = f"{repo}@{branch}"
     if titles.get(key):
         return titles[key]
-    if not fetch:
+    if not fetch or offline():
         return ""
     env = {k: v for k, v in os.environ.items() if k not in ("GH_CONFIG_DIR", "GH_TOKEN")}
     try:
@@ -86,6 +86,11 @@ def pr_of_branch(cwd, titles, fetch=True):
         titles[key] = n
         save_titles(titles)
     return n
+
+
+def offline():
+    """BK_NO_WARM=1: no consultar GitHub (los tests; también quien no quiera que bk salga a la red)."""
+    return os.environ.get("BK_NO_WARM") == "1"
 
 
 def save_titles(titles):
@@ -105,7 +110,7 @@ def title_for(cwd, num, titles, fetch=True):
         return ""
     if key in titles:
         return titles[key]
-    if not fetch:
+    if not fetch or offline():
         return ""
     env = {k: v for k, v in os.environ.items() if k not in ("GH_CONFIG_DIR", "GH_TOKEN")}
     try:   # el endpoint de issues sirve también para PRs

@@ -38,7 +38,8 @@ cat >"$TMP/fake/tmux" <<SH
 echo "\$*" >>"$TMP/tmux.log"
 case "\$1" in new-session|new-window) echo "%99" ;; set-option) ;; *) exit 1 ;; esac
 SH
-lanza() { : >"$TMP/tmux.log"; (cd "$REPO" && env PATH="$TMP/fake:$PATH" "$@" "$ROOT/bin/bk" review 7 2>&1); }
+# Sin /proc/meminfo (BK_MEMINFO a un archivo que no existe): el dato sale del memory_pressure falso, también en Linux
+lanza() { : >"$TMP/tmux.log"; (cd "$REPO" && env PATH="$TMP/fake:$PATH" BK_MEMINFO="$TMP/no-hay-meminfo" "$@" "$ROOT/bin/bk" review 7 2>&1); }
 out=$(lanza FAKE_FREE=5 BK_FORCE=0); rc=$?
 check $(( rc == 0 )) "con 5% de memoria libre, bk review no lanza"
 check_eq "$(grep -c 'queda 5% de memoria libre' <<<"$out")" "1" "y dice cuánta queda y cómo forzarlo"
@@ -49,4 +50,19 @@ lanza FAKE_FREE=5 BK_FORCE=0 BK_MEM_MIN=3 >/dev/null; check $? "BK_MEM_MIN=3: co
 lanza FAKE_FREE=40 BK_FORCE=0 >/dev/null; check $? "con 40% libre lanza"
 printf '#!/bin/sh\nexit 1\n' >"$TMP/fake/memory_pressure"
 lanza BK_FORCE=0 >/dev/null; check $? "si memory_pressure no responde: no frena"
+
+# --- Linux: MemAvailable / MemTotal de /proc/meminfo (un meminfo falso); gana a memory_pressure ---
+# (cada lanzamiento con tareas limpias: si no, la tarea pr7-reviewer de arriba no deja lanzar otra)
+export BK_TASKS_DIR="$TMP/tasks"
+lanza_limpio() { rm -rf "$BK_TASKS_DIR"; lanza "$@"; }
+meminfo() { printf 'MemTotal:       %s kB\nMemFree:          100 kB\nMemAvailable:   %s kB\n' "$1" "$2" >"$TMP/meminfo"; }
+printf '#!/bin/sh\necho "System-wide memory free percentage: 90%%"\n' >"$TMP/fake/memory_pressure"
+meminfo 16000000 1000000   # 6 %
+out=$(lanza_limpio BK_FORCE=0 BK_MEMINFO="$TMP/meminfo"); rc=$?
+check $(( rc == 0 )) "Linux con 6% de MemAvailable: bk review no lanza (aunque memory_pressure diga 90%)"
+check_eq "$(grep -c 'queda 6% de memoria libre' <<<"$out")/$(created)" "1/0" "y dice cuánta queda, sin crear la ventana"
+meminfo 16000000 8000000   # 50 %
+lanza_limpio BK_FORCE=0 BK_MEMINFO="$TMP/meminfo" >/dev/null; check_eq "$?/$(created)" "0/1" "Linux con 50% de MemAvailable: lanza"
+printf 'MemTotal:       16000000 kB\nMemFree:          100 kB\n' >"$TMP/meminfo"
+lanza_limpio BK_FORCE=0 BK_MEMINFO="$TMP/meminfo" >/dev/null; check $? "un kernel sin MemAvailable: no frena"
 finish

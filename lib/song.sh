@@ -15,6 +15,8 @@ LOG="$CACHE/song.log"
 # agudos (tercios de octava de 32 Hz a 16 kHz, como un ecualizador de 31 bandas; cada una filtrada dos veces
 # para que no se pise con las vecinas). astats mide cada canal; song_ui.py lee lavfi.astats.3…30 y pan
 # devuelve solo los dos originales. Una franja arriba de lo que da el stream (22 kHz → 11 kHz) mide silencio.
+# Son 56 filtros: cuestan CPU. Por eso mpv arranca sin VIZ y solo lo tiene mientras está abierta bk song ui
+# (la UI lo agrega al abrir y en cada estación nueva, con "af add", y lo saca al cerrar con "af remove @viz").
 VIZ_HZ="32 40 50 63 79 100 126 159 200 252 318 400 504 635 800 1008 1270 1600 2016 2540 3200 4032 5080 6400 8064 10160 12801 16128"
 viz_graph() {
   local n=0 f split="" bands="" merge="[o]" bp
@@ -120,7 +122,7 @@ play() {
   fi
   [[ "$vol" =~ ^[0-9]+$ ]] || vol=100
   kill_player
-  nohup mpv --no-video --volume="$vol" --af="$VIZ" --no-terminal --idle=no --cache=yes --demuxer-max-bytes=2MiB \
+  nohup mpv --no-video --volume="$vol" --no-terminal --idle=no --cache=yes --demuxer-max-bytes=2MiB \
     --ytdl-format=bestaudio/best --input-ipc-server="$SOCK" --title="bk-song" \
     --log-file="$LOG" --msg-level=all=warn "$3" >/dev/null 2>&1 </dev/null &
   disown
@@ -326,15 +328,17 @@ case "${1:-}" in
   pause)           need_running; ipc '{"command":["cycle","pause"]}' >/dev/null; bar
                    if [ "$(prop pause)" = true ]; then echo "⏸ en pausa"; else echo "▶ sonando"; fi ;;
   bar-status)      cmd_bar_status ;;
+  _viz)            printf '%s\n' "$VIZ" ;;   # el filtro del espectro (para los tests)
   next)            cmd_step 1 ;;
   prev)            cmd_step -1 ;;
   stations)        stations | awk -F'|' '{ print $1 "\t" $3 "\t" $2 }' ;;
   genres)          genres ;;
   ui)              command -v mpv >/dev/null || die "falta mpv (brew install mpv)"
                    running || play_key techno >/dev/null
-                   # Si mpv lo arrancó una versión vieja de bk song, sumarle el medidor en caliente
-                   prop af | grep -q '"viz"' || ipc "{\"command\":[\"af\",\"add\",\"$VIZ\"]}" >/dev/null
-                   exec python3 "$LIB/song_ui.py" "$SOCK" "$LIB/song.sh" ;;
+                   # El espectro solo mientras la UI está abierta: lo agrega ya (y song_ui.py, en cada estación
+                   # nueva) y lo saca al salir
+                   prop af | grep -q '"viz"' || ipc "$(jq -cn --arg f "$VIZ" '{command: ["af", "add", $f]}')" >/dev/null
+                   BK_SONG_VIZ="$VIZ" exec python3 "$LIB/song_ui.py" "$SOCK" "$LIB/song.sh" ;;
   now|status)      cmd_now ;;
   hist|history)    shift; cmd_hist "${1:-15}" ;;
   vol|volume)      shift; cmd_vol "${1:-}" ;;
