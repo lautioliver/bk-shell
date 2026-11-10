@@ -115,7 +115,9 @@ quedó sin commitear, en una sola sesión de tmux.
   login; `bk account use trabajo` la pone en esta sesión: los agentes y chats que lances desde acá corren con ella,
   y otra sesión puede usar otra al mismo tiempo. Las conversaciones son las mismas (`/resume` y `alt+s` ven todas);
   `--relaunch` también cambia el chat principal, retomando su conversación. `bk run … --account X` solo para un
-  lanzamiento; `bk account use default` vuelve a la de siempre (`bk account login default` rehace su login). El riel muestra la cuenta en Status.
+  lanzamiento; `bk account use default` vuelve a la de siempre (`bk account login default` rehace su login). El riel muestra siempre la cuenta de la sesión
+  en Status, también la default, con el mail con el que está logueada (el nombre de la cuenta si no tiene login;
+  lo pregunta cada 5 min con `accounts.py list --json`).
 - **Contexto a la vista**: cada llamada de una sesión vuelve a leer (y a pagar) todo su contexto. Desde 200k
   (ámbar) y 400k (rojo) la tira marca la sesión con `▪` (el número, en el tooltip), el riel muestra el de cada agente
   y el de este chat con la sugerencia de `/clear` o un chat nuevo, y `bk monitor` lo tiene en la columna CTX.

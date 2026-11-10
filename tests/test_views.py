@@ -528,6 +528,57 @@ class Contexto(unittest.TestCase):
         self.assertEqual(sidebar.row_tip("ag", 1, ("demo · i7", ""), None), "agente 1 · demo · i7")
 
 
+class CuentaRiel(unittest.TestCase):
+    """La fila Cuenta del riel: siempre, también con la cuenta default, con el mail logueado (mails de prueba)."""
+
+    def setUp(self):
+        for name in ("sh", "usage", "roles_profile"):
+            self.addCleanup(setattr, rail, name, getattr(rail, name))
+        self.addCleanup(rail._who.update, dict(rail._who))
+        self.addCleanup(rail._account.update, dict(rail._account))
+        rail.usage = lambda: {}
+        rail.roles_profile = lambda top: "—"
+        rail._profile["t"] = 0
+        self.listing = [{"name": "default", "provider": "claude", "logged_in": True, "who": "demo@example.com"},
+                        {"name": "trabajo", "provider": "claude", "logged_in": True, "who": "otra@example.com"},
+                        {"name": "nueva", "provider": "claude", "logged_in": False, "who": ""},
+                        {"name": "trabajo", "provider": "codex", "logged_in": True, "who": "codex@example.com"}]
+        self.opts = {}
+
+        def fake_sh(*a, **k):
+            if a[0] == "tmux":
+                return self.opts.get(a[-1], "")
+            if a[-2:] == ("list", "--json"):
+                return json.dumps(self.listing)
+            return ""
+        rail.sh = fake_sh
+
+    def account(self, claude="", codex=""):
+        self.opts = {"@bk_account_claude": claude, "@bk_account_codex": codex}
+        rail._account["t"] = rail._who["t"] = 0
+        return STRIP.sub("", rail.session_account())
+
+    def test_default_muestra_su_mail(self):
+        self.assertEqual(self.account(""), "demo@example.com")
+        self.assertEqual(self.account("default"), "demo@example.com")
+
+    def test_otra_cuenta_su_mail_y_sin_login_el_nombre(self):
+        self.assertEqual(self.account("trabajo"), "otra@example.com")
+        self.assertEqual(self.account("nueva"), "nueva")          # sin login: el nombre de la carpeta
+        self.assertEqual(self.account("trabajo", "trabajo"), "otra@example.com · codex trabajo")
+        self.assertEqual(self.account("", "default"), "demo@example.com")   # codex default: no se muestra
+
+    def test_sin_lista_de_cuentas_el_nombre(self):
+        rail.sh = lambda *a, **k: "{roto" if a[0] != "tmux" else ""
+        self.assertEqual(self.account(""), "default")
+
+    def test_fila_cuenta_siempre_en_status(self):
+        self.opts = {}
+        rail._account["t"] = rail._who["t"] = 0
+        status = STRIP.sub("", "\n".join(rail.card_status(70, tempfile.mkdtemp(), [], None)))
+        self.assertIn("Cuenta  demo@example.com", status)
+
+
 if __name__ == "__main__":
     unittest.main()
 
