@@ -249,6 +249,47 @@ class SongUiPaleta(unittest.TestCase):
         self.assertEqual(G.ramp(2, "tint", "rose", G.DAY), [G.DAY["tint"], G.DAY["rose"]])
 
 
+class SongUiEspectro(unittest.TestCase):
+    _song_ui = SongUiPaleta._song_ui
+
+    def test_bands_of_lee_las_franjas_desde_el_canal_3(self):
+        SU = self._song_ui()
+        meta = {"lavfi.astats.%d.RMS_level" % c: str(-10.0 * c) for c in range(1, 31)}
+        meta["lavfi.astats.5.RMS_level"] = "-inf"
+        bands, viejo = SU.bands_of(meta)
+        self.assertEqual(len(bands), 28)
+        self.assertEqual((bands[0], bands[1], bands[-1]), (-30.0, -40.0, None))   # -300 dB y -inf: silencio
+        self.assertIsNone(bands[2])
+        self.assertFalse(viejo)
+
+    def test_bands_of_reconoce_el_filtro_viejo(self):
+        SU = self._song_ui()
+        self.assertEqual(SU.bands_of({"lavfi.astats.1.RMS_level": "-20", "lavfi.astats.2.RMS_level": "-20"}), ([], True))
+        self.assertEqual(SU.bands_of(None), ([], False))   # mpv todavía sin datos: no es el filtro viejo
+
+    def test_spectrum_sube_al_instante_y_baja_suave(self):
+        SU = self._song_ui()
+        sp = SU.Spectrum()
+        sp.update([-10.0, -40.0, None], 0.0)
+        self.assertEqual(len(sp.vals), 3)
+        self.assertEqual(sp.vals[0], 1.0)        # la franja más fuerte llena la altura
+        self.assertEqual(sp.vals[2], 0.0)        # silencio: vacía
+        sp.update([None, None, None], 0.1)
+        self.assertAlmostEqual(sp.vals[0], 1.0 - SU.FALL * 0.1)   # baja de a poco, no de golpe
+        sp.update([-10.0, -40.0], 0.2)           # otra cantidad de franjas (otro mpv): empieza de cero
+        self.assertEqual(len(sp.vals), 2)
+
+    def test_spline_llena_el_ancho_y_pasa_por_las_franjas(self):
+        SU = self._song_ui()
+        cv = SU.spline([0.0, 1.0, 0.0], 9)
+        self.assertEqual(len(cv), 9)
+        self.assertEqual((cv[0], cv[4], cv[8]), (0.0, 1.0, 0.0))
+        self.assertTrue(all(0.0 <= v <= 1.0 for v in cv))
+        self.assertTrue(0.0 < cv[2] < 1.0)        # entre franjas, una curva: no escalones
+        SU.use_palette("dark")
+        self.assertEqual(len(SU.render_graph([0.5] * 28, 40, 4)), 4)
+
+
 class Proporciones(unittest.TestCase):
     def test_la_suite_no_toca_tu_ui_json(self):
         self.assertNotEqual(os.path.realpath(G.UI_FILE), os.path.realpath(os.path.expanduser("~/.config/bk/ui.json")))

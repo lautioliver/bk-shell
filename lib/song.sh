@@ -11,7 +11,22 @@ SOCK="$CACHE/song.sock"
 NOW="$CACHE/song.station"   # "clave<TAB>nombre<TAB>género" de lo que está sonando
 HIST="$CACHE/song.history"  # "hora<TAB>estación<TAB>tema", lo último al final
 LOG="$CACHE/song.log"
-VIZ='@viz:lavfi=[astats=metadata=1:reset=1]'   # niveles por canal para el gráfico de bk song ui
+# Espectro para bk song ui: el audio sigue igual (canales 1-2) y al lado, en mono, 28 franjas de graves a
+# agudos (tercios de octava de 32 Hz a 16 kHz, como un ecualizador de 31 bandas; cada una filtrada dos veces
+# para que no se pise con las vecinas). astats mide cada canal; song_ui.py lee lavfi.astats.3…30 y pan
+# devuelve solo los dos originales. Una franja arriba de lo que da el stream (22 kHz → 11 kHz) mide silencio.
+VIZ_HZ="32 40 50 63 79 100 126 159 200 252 318 400 504 635 800 1008 1270 1600 2016 2540 3200 4032 5080 6400 8064 10160 12801 16128"
+viz_graph() {
+  local n=0 f split="" bands="" merge="[o]" bp
+  for f in $VIZ_HZ; do
+    split+="[s$n]"; merge+="[b$n]"
+    bp="bandpass=f=$f:width_type=o:w=0.333"
+    bands+=";[s$n]${bp},${bp}[b$n]"; n=$((n + 1))
+  done
+  printf '%s' "aformat=channel_layouts=stereo,asplit=2[o][a];[a]pan=mono|c0=0.5*c0+0.5*c1,asplit=$n$split$bands"
+  printf '%s' ";${merge}amerge=inputs=$((n + 1)),astats=metadata=1:reset=1:measure_perchannel=RMS_level:measure_overall=none,pan=stereo|c0=c0|c1=c1"
+}
+VIZ="@viz:lavfi=[$(viz_graph)]"
 LIB="$(dirname "$(readlink -f "$0")")"
 
 die()  { printf 'bk song: %s\n' "$*" >&2; exit 1; }
@@ -55,7 +70,8 @@ uso: bk song [comando]
   bk song <url>             cualquier stream o link (YouTube y SoundCloud andan con yt-dlp)
   bk song next | prev       siguiente / anterior estación del mismo género
   bk song pause             pausa / reanuda
-  bk song ui                pantalla en vivo: gráfico, géneros, últimos temas y control con teclas
+  bk song ui                pantalla en vivo: el espectro del sonido (graves a agudos), las radios
+                            del género y control con teclas (? las muestra)
   bk song now               qué estación y qué tema están sonando
   bk song hist [N]          los últimos N temas que sonaron (default 15)
   bk song vol [+N|-N|N]     volumen (sin argumento: el actual)

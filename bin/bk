@@ -1,7 +1,7 @@
 #!/bin/bash
 # bk — bk shell: workspace de agentes de Barrilete Kit en la terminal (tmux + Claude Code).
 # Cada agente corre en una ventana de la sesión tmux "agents", con BARRILETE_ROLE/MODEL/ISSUE
-# en el entorno (la barra de Sketchybar lo etiqueta con eso).
+# en el entorno (una barra de estado u otro script lo pueden leer de ahí).
 set -euo pipefail
 
 WS="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
@@ -59,6 +59,7 @@ uso: bk [comando] [--dry-run]
   monitor           pantalla para el otro monitor: qué te espera, agentes, tareas, contexto (CTX), costo y desvíos en
                     vivo (los graves suenan)
                     (c o bk monitor --clear limpian los desvíos: lo anterior no vuelve aunque relea los transcripts)
+  dash [--once]     franja de estado: tablas de agentes y del uso del día, cada 5 s (--once: una vez y sale)
   stats             estadísticas de uso: actividad, modelos, rachas, costo (alt+u)
   customize         estilo del workspace: header arriba o abajo (alt+,)
   s                 sesiones de Claude estilo Orca: abiertas (saltar) y recientes de todas las
@@ -1519,6 +1520,7 @@ case "${1:-}" in
   _style)      WS_SESSION="${2:?}"; ws_style ;;
   stats)       exec python3 "$WS/lib/stats.py" ;;
   monitor)     exec python3 "$WS/lib/monitor.py" "$@" ;;
+  dash)        shift; exec python3 "$WS/lib/dash.py" "$@" ;;
   customize)   exec python3 "$WS/lib/customize.py" ;;
   s|sessions)  exec python3 "$WS/lib/sessions.py" ;;
   -h|--help|help) usage ;;

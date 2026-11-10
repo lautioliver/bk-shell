@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""bk song ui — pantalla en vivo de la radio: el tema arriba, el sonido como un perfil que crece desde abajo
-(lo nuevo entra por la derecha, en franjas de color por altura) y el estado abajo, con lo que sigue.
+"""bk song ui — pantalla en vivo de la radio: el tema arriba, el espectro del sonido en el medio (de graves a
+agudos, una barra por columna: una curva continua) y abajo solo las estaciones.
 
 Le habla al mpv de `bk song` por su socket IPC. Es solo un control remoto: al salir, la música sigue.
-El gráfico es real: mpv corre con astats y acá se lee el nivel RMS ~20 veces por segundo.
+El gráfico es real: mpv separa el audio en 28 franjas de frecuencia (VIZ en song.sh) y astats mide cada una;
+acá se leen ~20 veces por segundo y se interpolan entre franjas para llenar el ancho. Teclas: espacio pausa · g género · 1-9 radio · n/p · f guardar · +/- vol ·
+s cortar · q salir · ? las muestra abajo.
 
 uso: song_ui.py <socket de mpv> <ruta a song.sh>
 """
@@ -27,11 +29,15 @@ SOCK, SONG = sys.argv[1], sys.argv[2]
 CACHE = os.environ.get("BK_SONG_CACHE") or os.path.expanduser("~/.cache/bk")
 HISTORY_ROWS = 3          # últimos temas que se guardan (se ven con bk song hist)
 FPS = 20
-DB_RANGE = 12.0           # dB de la escala: el pico reciente llena la altura, 12 dB menos es vacío
-COL_FRAMES, SMOOTH = 3, 0.6   # cuadros por columna y suavizado (1 = sin suavizar)
-CURVE = 2.2               # >1 aplasta lo sostenido: picos y valles como un perfil, no un bloque
-SCALE_SECONDS = 6         # ventana para la escala automática (las radios de techno vienen muy comprimidas)
-HEADER_ROWS, FOOTER_ROWS = 4, 5   # tema/datos/cita/vacía arriba; vacía/estado/radios/vacía/"a continuación" abajo
+# Franjas del espectro: lavfi.astats.3… (los canales 1-2 son el audio que suena). Se usan las que traiga el
+# mpv que suena: uno arrancado con una versión anterior de VIZ (song.sh) puede tener otra cantidad.
+SPEC_RANGE = 30.0         # dB de la escala común: la franja más fuerte de los últimos segundos llena la altura
+BAND_RANGE = 15.0         # dB de la escala propia de cada franja (si no, los agudos casi no se mueven)
+MIX = 0.6                 # cuánto pesa la escala común (la forma del sonido) contra la propia (el movimiento)
+SCALE_SECONDS = 6         # ventana para las escalas automáticas (las radios de techno vienen muy comprimidas)
+FALL = 1.8                # cuánto baja una barra por segundo (en alturas); sube al instante
+CURVE = 1.5               # >1 baja lo sostenido y deja los golpes altos (si no, el tercio de abajo queda siempre lleno)
+HEADER_ROWS, FOOTER_ROWS = 4, 3   # tema/datos/cita/vacía arriba; graves…agudos/vacía/estaciones abajo
 
 # Paletas por fondo de terminal (no por `bk theme`: la UI puede correr en otra terminal), con los colores de
 # gentle: dark = NIGHT, light = DAY. BANDS: el color del perfil por altura, de abajo (apagado) a arriba (rosa).
@@ -140,40 +146,82 @@ def db_of(meta, ch):
     return db if db > -120 else None
 
 
-class Scale:
-    """Escala automática: el pico de los últimos segundos llena la barra. Con una escala fija, una radio
-    comprimida queda siempre arriba y no se ve el ritmo."""
+def bands_of(meta):
+    """([dB por franja, de graves a agudos], filtro_viejo) según af-metadata de mpv. Los canales 1-2 son el audio
+    que suena y las franjas van de lavfi.astats.3 en adelante; un mpv con el filtro viejo (solo 1-2) da ([], True)."""
+    meta = meta or {}
+    n = sum(1 for k in meta if re.fullmatch(r"lavfi\.astats\.\d+\.RMS_level", k)) - 2
+    return [db_of(meta, 3 + i) for i in range(max(0, n))], bool(meta) and n <= 0
+
+
+class Spectrum:
+    """Alturas de las franjas (0-1), que suben al instante y bajan suave. Cada barra mezcla una escala común
+    (la franja más fuerte de los últimos segundos llena la altura: se ve la forma del sonido) con una propia
+    (su máximo reciente: así también se mueven las franjas que varían poco)."""
 
     def __init__(self):
-        self.peaks = []   # (t, db)
+        self.reset()
 
-    def __call__(self, db, now):
-        if db is None:
-            return 0.0
-        self.peaks.append((now, db))
-        while self.peaks and now - self.peaks[0][0] > SCALE_SECONDS:
-            self.peaks.pop(0)
-        top = max(d for _, d in self.peaks)
-        v = max(0.0, min(1.0, (db - (top - DB_RANGE)) / DB_RANGE))
-        return v ** CURVE   # la curva baja lo sostenido y deja los golpes como picos (si no, todo queda lleno)
+    def reset(self, n=0):
+        self.hist = []                      # (t, [dB por franja])
+        self.vals = [0.0] * n
+        self.t = None
+
+    def update(self, dbs, now):
+        if len(dbs) != len(self.vals):      # otro mpv, con otra cantidad de franjas: empezar de cero
+            self.reset(len(dbs))
+        dt = 0.0 if self.t is None else min(0.5, now - self.t)
+        self.t = now
+        if any(d is not None for d in dbs):
+            self.hist.append((now, dbs))
+        while self.hist and now - self.hist[0][0] > SCALE_SECONDS:
+            self.hist.pop(0)
+        known = [d for _, ds in self.hist for d in ds if d is not None]
+        top = max(known) if known else 0.0
+        for i, d in enumerate(dbs):
+            if d is None:
+                target = 0.0
+            else:
+                btop = max((ds[i] for _, ds in self.hist if ds[i] is not None), default=d)
+                common = (d - (top - SPEC_RANGE)) / SPEC_RANGE
+                own = (d - (btop - BAND_RANGE)) / BAND_RANGE
+                target = max(0.0, min(1.0, MIX * common + (1 - MIX) * own)) ** CURVE
+            self.vals[i] = max(target, self.vals[i] - FALL * dt)
 
 
 def clip(text, width):
     return text if len(text) <= width else text[: max(0, width - 1)] + "…"
 
 
-def render_graph(levels, width, rows):
-    """Perfil del sonido que crece desde abajo, con resolución de 1/8 de celda. Lo nuevo entra por la derecha.
-    El color va por altura en franjas fijas (como un ecualizador): abajo apagado, arriba rosa."""
+def spline(vals, width):
+    """Las franjas estiradas a `width` columnas con Catmull-Rom: una curva suave, no escalones."""
+    n = len(vals)
+    if width <= 1 or n < 2:
+        return [vals[0] if vals else 0.0] * max(1, width)
+    out = []
+    for x in range(width):
+        u = x * (n - 1) / (width - 1)
+        i = min(int(u), n - 2)
+        t = u - i
+        p0, p1, p2, p3 = vals[max(i - 1, 0)], vals[i], vals[i + 1], vals[min(i + 2, n - 1)]
+        v = 0.5 * (2 * p1 + (p2 - p0) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t * t
+                   + (3 * p1 - p0 - 3 * p2 + p3) * t * t * t)
+        out.append(max(0.0, min(1.0, v)))
+    return out
+
+
+def render_graph(vals, width, rows):
+    """Espectro de graves (izquierda) a agudos: una barra por columna, sin aire entre barras (como el área bajo
+    la curva), que crece desde abajo con 1/8 de celda. El color va por altura en franjas fijas: abajo apagado,
+    arriba rosa. Un solo color por fila (menos bytes por cuadro)."""
     blocks = " ▁▂▃▄▅▆▇█"
-    vals = levels[-width:]
-    vals = [0.0] * (width - len(vals)) + vals
+    cv = spline(vals or [0.0], width)
     out = []
     for r in range(rows):                       # r = 0 es la fila de arriba
         h = rows - 1 - r                        # altura de esta fila desde abajo
         color = fg(BANDS[min(len(BANDS) - 1, h * len(BANDS) // max(1, rows))])
         cells = []
-        for v in vals:
+        for v in cv:
             fill = v * rows - h
             cells.append("█" if fill >= 1 else blocks[int(fill * 8)] if fill > 0 else " ")
         out.append(color + "".join(cells))
@@ -193,8 +241,8 @@ def main():
     stations = load_stations()
     genres = list(dict.fromkeys(g for _, _, g in stations))
     view = None           # género que muestran los números (sigue al que suena hasta que apretás g)
-    levels, pending = [], []
-    scale = Scale()
+    spec = Spectrum()
+    old_viz = False       # el mpv que suena arrancó con el filtro más viejo (solo volumen, sin franjas)
     info = {"station": "", "key": "", "genre": "", "title": "", "paused": False, "vol": 0, "alive": False,
             "br": "", "icy": ""}
     history = []
@@ -206,7 +254,7 @@ def main():
 
     def restore(*_):
         termios.tcsetattr(fd, termios.TCSADRAIN, old_tty)
-        out.write("\033[?25h\033[?1049l")         # cursor visible, salir de la pantalla alternativa
+        out.write("\033[?2026l\033[?25h\033[?1049l")   # cerrar la sincronización, cursor visible, pantalla normal
         out.flush()
 
     def on_term(*_):
@@ -252,27 +300,21 @@ def main():
                 except OSError:
                     history = []
 
-            # ---- niveles (cada frame; en pausa el gráfico se congela) ----
+            # ---- espectro (cada frame; en pausa las barras bajan solas) ----
+            dbs = [None] * len(spec.vals)
             if info["alive"] and not info["paused"]:
-                meta = mpv.get("af-metadata/viz")
-                db_l = db_of(meta, 1)
-                db_r = db_of(meta, 2) if meta and "lavfi.astats.2.RMS_level" in meta else db_l   # radio mono
-                loud = max((d for d in (db_l, db_r) if d is not None), default=None)
-                pending.append(scale(loud, t0))
-                if len(pending) >= COL_FRAMES:   # una columna cada COL_FRAMES cuadros: lomas anchas, no agujas
-                    v = max(pending)
-                    pending.clear()
-                    prev = levels[-1] if levels else v
-                    levels.append(prev + (v - prev) * SMOOTH)
-                    del levels[:-cols]
+                bands, old_viz = bands_of(mpv.get("af-metadata/viz"))
+                dbs = bands or dbs
+            spec.update(dbs, t0)
 
             # ---- dibujo ----
             shown = view or info["genre"] or (genres[0] if genres else "")
             in_view = [st for st in stations if st[2] == shown][:9]
-            buf = ["\033[H"]
+            buf = ["\033[?2026h\033[H"]   # salida sincronizada: la terminal muestra el cuadro entero, sin cortes
             if info["alive"]:
                 title = info["title"] or info["station"] or "?"
-                datos = " · ".join(x for x in (info["genre"], info["station"] if info["title"] else "",
+                datos = " · ".join(x for x in ("⏸ en pausa" if info["paused"] else "", info["genre"],
+                                                info["station"] if info["title"] else "",
                                                 f'{info["br"]} kbps' if info["br"] else "", f'vol {info["vol"]}%') if x)
                 cita = info["icy"] if info["icy"] and info["icy"] != info["station"] else (history[1][2] if len(history) > 1 else "")
                 buf.append("\033[2K  " + fg(PINK) + BOLD + "♪ " + clip(title, width - 2) + RESET + "\n")
@@ -282,22 +324,25 @@ def main():
                 buf.append("\033[2K  " + fg(DIM) + "■ no está sonando nada — [n] o [1-%d] para arrancar" % len(stations)
                            + RESET + "\n\033[2K\n\033[2K\n\033[2K\n")
             rows = max(3, lines - HEADER_ROWS - FOOTER_ROWS)
-            for line in render_graph(levels or [0.0], width, rows):
+            graph = render_graph(spec.vals, width, rows)
+            if old_viz:   # mpv viejo: sin franjas no hay espectro; al cambiar de estación arranca con el filtro nuevo
+                graph[rows // 2] = " " * max(0, (width - 52) // 2) + fg(DIM) + "el espectro aparece al cambiar de estación (n o 1-9)"
+            for line in graph:
                 buf.append("\033[2K  " + line + RESET + "\n")
-            state = (BOLD + fg(TEXT) + "⏸ En pausa") if info["paused"] else (BOLD + fg(TEXT) + "▶ Sonando")
-            buf.append("\033[2K\n\033[2K  " + state + RESET + fg(DIM) + " · " + clip(info["station"] or "-", 40)
-                       + f' · vol {info["vol"]}%' + RESET + "\n")
-            radios = "  ".join((fg(PINK) + BOLD if k == info["key"] else fg(DIM)) + "%d %s" % (n + 1, k) + RESET
-                               for n, (k, _, _) in enumerate(in_view))
-            keys = msg if msg and t0 < msg_until else "espacio pausa · g género · 1-9 radio · n/p · f guardar · +/- vol · q salir"
-            buf.append("\033[2K  " + fg(DIM) + shown + ": " + RESET + radios + fg(DIM) + "   " + clip(keys, max(10, width - 60)) + RESET + "\n")
-            nxt = ""
-            if in_view:
-                ks = [k for k, _, _ in in_view]
-                k_next = ks[(ks.index(info["key"]) + 1) % len(ks)] if info["key"] in ks else ks[0]
-                nxt = next((nm for k, nm, _ in in_view if k == k_next), k_next)
-            buf.append("\033[2K\n\033[2K  " + fg(TEXT) + "A continuación: " + BOLD + clip(nxt or "-", 40) + RESET
-                       + fg(DIM) + (" · " + shown if shown else "") + "  (n)" + RESET + "\033[J")
+            buf.append("\033[2K  " + fg(DIM) + "graves" + " " * max(1, width - 12) + "agudos" + RESET + "\n\033[2K\n")
+            # Abajo, solo las estaciones del género (las teclas, con ?)
+            # Cortadas al ancho: si la línea se partiera en dos, la pantalla se correría y se perdería el título
+            used, items = len(shown) + 2, []
+            for n, (k, _, _) in enumerate(in_view):
+                txt = "%d %s" % (n + 1, k)
+                if used + len(txt) + 2 > width:
+                    break
+                used += len(txt) + 2
+                items.append((fg(PINK) + BOLD if k == info["key"] else fg(DIM)) + txt + RESET)
+            line = fg(DIM) + shown + ": " + RESET + "  ".join(items)
+            if msg and t0 < msg_until:   # el aviso o las teclas (?): al lado si entran, si no en lugar de las radios
+                line = line + fg(DIM) + "   " + msg + RESET if used + 3 + len(msg) <= width else fg(DIM) + clip(msg, width) + RESET
+            buf.append("\033[2K  " + line + "\033[J\033[?2026l")
             out.write("".join(buf))
             out.flush()
 
@@ -311,13 +356,13 @@ def main():
                     song("pause")
                 elif ch in ("n", "N"):
                     msg, msg_until = "cambiando de estación…", time.monotonic() + 3
-                    mpv.close(); song("next"); levels.clear(); scale.peaks.clear()
+                    mpv.close(); song("next"); spec.reset()
                 elif ch in ("p", "P"):
                     msg, msg_until = "cambiando de estación…", time.monotonic() + 3
-                    mpv.close(); song("prev"); levels.clear(); scale.peaks.clear()
+                    mpv.close(); song("prev"); spec.reset()
                 elif ch.isdigit() and 1 <= int(ch) <= len(in_view):
                     msg, msg_until = "cambiando de estación…", time.monotonic() + 3
-                    mpv.close(); song(in_view[int(ch) - 1][0]); levels.clear(); scale.peaks.clear()
+                    mpv.close(); song(in_view[int(ch) - 1][0]); spec.reset()
                     view = None
                 elif ch in ("g", "G", "\t") and genres:
                     i = genres.index(shown) if shown in genres else -1
@@ -329,6 +374,8 @@ def main():
                 elif ch in ("+", "=", "-", "_"):
                     step = 5 if ch in ("+", "=") else -5
                     mpv.cmd("set_property", "volume", max(0, min(100, int(mpv.get("volume") or 0) + step)))
+                elif ch == "?":
+                    msg, msg_until = "espacio pausa · g género · 1-9 radio · n/p · f guardar · +/- vol · s cortar · q salir", time.monotonic() + 5
                 elif ch in ("s", "S"):
                     mpv.close(); song("stop")
                     break
