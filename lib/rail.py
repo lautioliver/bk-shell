@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """bk rail: riel derecho del workspace, a lo gentle-shell (Status → Agents → Changes → radio; los checkpoints están en bk monitor y bk checkpoints).
 
-Solo lectura; se redibuja cada 2 s. El detalle está en los overlays: alt+a agentes, alt+g cambios,
+Solo lectura; se redibuja cada 1 s y, con el pane oculto, no dibuja. El detalle está en los overlays: alt+a agentes, alt+g cambios,
 alt+k comandos, alt+s sesiones.
 """
 import glob, json, os, subprocess, sys, time
@@ -179,7 +179,7 @@ _memo = {}
 
 
 def memo(key, ttl, fn):
-    """Lo caro (git, gh, usage) se recalcula cada `ttl` s; el spinner se dibuja 4 veces por segundo."""
+    """Lo caro (git, gh, usage) se recalcula cada `ttl` s; el frame se arma una vez por segundo."""
     v = _memo.get(key)
     if v and time.time() - v[0] < ttl:
         return v[1]
@@ -459,9 +459,41 @@ def frame(W, H, cwd):
     return out[:H]
 
 
+TICK_S = 1.0    # visible: redibuja cada 1 s (antes 0.25 s: 4 veces por segundo en cada workspace)
+HIDDEN_S = 3.0  # oculto: ni arma el frame; mira cada 3 s si volvió a estar a la vista
+
+
+def visible():
+    """¿El pane del riel está a la vista? Su sesión tiene un cliente y su ventana es la activa.
+
+    Fuera de tmux, o si tmux no contesta, cuenta como visible: mejor dibujar de más que congelar el riel.
+    """
+    pane = os.environ.get("TMUX_PANE")
+    if not pane:
+        return True
+    out = sh("tmux", "display-message", "-p", "-t", pane, "#{session_attached} #{window_active}").split()
+    if len(out) != 2:
+        return True
+    return out[0] != "0" and out[1] == "1"
+
+
+def step(last, cwd, W, H):
+    """Un paso del riel: (texto a escribir o None, el último escrito, segundos a esperar).
+
+    Oculto no arma el frame (ahí está lo caro: estados, git, gh). Visible escribe solo si el frame cambió.
+    """
+    if not visible():
+        return None, last, HIDDEN_S
+    lines = (frame(W, H, cwd) + [""] * H)[:H]
+    text = "\033[H" + "\033[K\n".join(cut(l, W) for l in lines) + "\033[K"
+    TICK[0] += 1
+    return (None if text == last else text), text, TICK_S
+
+
 def main():
     cwd = os.getcwd()
     sys.stdout.write("\033[?25l\033[2J")
+    last, size = None, None
     try:
         while True:
             try:
@@ -469,11 +501,13 @@ def main():
                 W, H = sz.columns, sz.lines
             except OSError:
                 W, H = 50, 40
-            lines = (frame(W, H, cwd) + [""] * H)[:H]
-            sys.stdout.write("\033[H" + "\033[K\n".join(cut(l, W) for l in lines) + "\033[K")
-            sys.stdout.flush()
-            TICK[0] += 1
-            time.sleep(0.25)
+            if (W, H) != size:      # cambió el tamaño: redibujar todo aunque el frame sea igual
+                last, size = None, (W, H)
+            text, last, wait = step(last, cwd, W, H)
+            if text:
+                sys.stdout.write(text)
+                sys.stdout.flush()
+            time.sleep(wait)
     except KeyboardInterrupt:
         pass
     finally:

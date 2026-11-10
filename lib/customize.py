@@ -13,10 +13,6 @@ import gentle as G
 
 BK = os.path.join(os.path.dirname(HERE), "bin", "bk")
 CATS = [
-    ("Cards", "cards", [("float", "panel con fondo y barra ▎ (Gentle Shell 4)"),
-                        ("neon", "marco redondeado (Gentle Shell 3)")]),
-    ("Density", "density", [("comfortable", "aire arriba y abajo de cada título"),
-                            ("compact", "sin filas vacías")]),
     ("Header", "header", [("top", "barra arriba"), ("bottom", "barra abajo")]),
 ]
 

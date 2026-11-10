@@ -15,13 +15,13 @@ quedó sin commitear, en una sola sesión de tmux.
 ```
 ┌─┬──────────────────────────────────────────┬───────────────────────┐
 │1│ ✿ mi-proyecto · ~/mi-proyecto main · opus│ ∗ 2 activos · usage   │  ← header: proyecto, rama, modelo, uso
-│●│                                          │ ▎ ✿ Status            │
-│2│   chat con el orquestador (claude)       │ ▎ Project / Branch    │
-│○│                                          │ ▎ ∗ Agents            │  ← riel: estado, agentes,
-│─│   le pedís cosas a los agentes, ellos    │ ▎ ● i42 sonnet  12m   │    y lo que quedó
-│1│   trabajan en sus ventanas y vos los     │ ▎ ✎ Changes           │    sin commitear
-│●│   ves acá al costado                     │                       │
-│2│                                          │                       │
+│●│                                          │ ╭ ✿ Status ─────────╮ │
+│2│   chat con el orquestador (claude)       │ │ Project / Branch  │ │
+│○│                                          │ ╰───────────────────╯ │  ← riel: estado, agentes,
+│─│   le pedís cosas a los agentes, ellos    │ ╭ ∗ Agents ─────────╮ │    y lo que quedó
+│1│   trabajan en sus ventanas y vos los     │ │ ● i42 sonnet  12m │ │    sin commitear
+│●│   ves acá al costado                     │ ╰───────────────────╯ │
+│2│                                          │ ╭ ✎ Changes ────────╮ │
 └─┴──────────────────────────────────────────┴───────────────────────┘
  ↑ tira: workspaces y agentes (⠋ trabajando · ! te espera o pide permiso · ? te pregunta · ✓ listo · ○ libre)
 ```
@@ -154,7 +154,14 @@ bk help            # todo lo demás
   que se pasa como `CLAUDE_CONFIG_DIR` (o `CODEX_HOME`). Lo compartido (`projects/` con las conversaciones,
   `settings.json`, `CLAUDE.md`, skills, plugins, hooks, historial) es un symlink a `~/.claude` (o `~/.codex`); lo
   propio son las credenciales (Claude Code las guarda en el llavero con un sufijo por carpeta) y `.claude.json`.
-- El estilo (tarjetas *float* o *neon*, densidad, header arriba o abajo) se guarda en `~/.config/bk/ui.json`.
+- Las tarjetas del riel y de las vistas tienen un solo estilo: marco redondeado con título. Lo que se elige con
+  `alt+,` (el header arriba o abajo) se guarda en `~/.config/bk/ui.json`.
+- El riel se redibuja cada segundo y solo si algo cambió; con su workspace oculto no arma nada y mira cada 3 s si
+  volvió a estar a la vista.
+- Comandos propios, como en git: si `bk` no conoce `bk foo`, corre `bk-foo` del `PATH` o
+  `${BK_PLUGINS:-~/.config/bk/plugins}/foo` (ejecutable) con el resto de los argumentos. Sirve para sumar comandos
+  desde otro repo sin tocar este. Los comandos de bk tienen prioridad, y el nombre solo puede tener letras,
+  números, `-` y `_`.
 - Los costos son el **equivalente en API** de los tokens (con una suscripción no se cobra así).
 
 ## Tests

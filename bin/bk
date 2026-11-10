@@ -53,7 +53,7 @@ uso: bk [comando] [--dry-run]
   monitor           pantalla para el otro monitor: qué te espera, agentes, tareas, costo y desvíos en vivo (los graves suenan)
                     (c o bk monitor --clear limpian los desvíos: lo anterior no vuelve aunque relea los transcripts)
   stats             estadísticas de uso: actividad, modelos, rachas, costo (alt+u)
-  customize         estilo del workspace: tarjetas float/neon, densidad, header, tema (alt+,)
+  customize         estilo del workspace: header arriba o abajo (alt+,)
   s                 sesiones de Claude estilo Orca: abiertas (saltar) y recientes de todas las
                     carpetas (retomar con claude --resume). En tmux: prefijo + s
   peek [ventana] [n] ver qué hace un agente sin entrar (sin ventana: todos, últimas líneas)
@@ -82,6 +82,7 @@ uso: bk [comando] [--dry-run]
   tokens            tokens del día y costo equivalente en API, por modelo y proyecto
 
 Los comandos de agentes se corren dentro de un proyecto Barrilete.
+Comandos propios: si bk no conoce "bk foo", corre bk-foo del PATH o ${BK_PLUGINS:-~/.config/bk/plugins}/foo.
 EOF
 }
 
@@ -326,7 +327,7 @@ launch() {
 
   need_tmux
   if has_window "$win"; then
-    # Misma ventana en otro proyecto (#12 de abra y #12 del kit): prefijar con el proyecto
+    # Misma ventana en otro proyecto (#12 de mi-proyecto y #12 de demo): prefijar con el proyecto
     local other mine
     other=$(project_of "$(tmux display-message -p -t "$SESSION:$win" '#{pane_current_path}')")
     mine=$(project_of "$dir")
@@ -1154,6 +1155,18 @@ cmd_run() {
   launch "i$n" "$wt" "$role" "#$n" "/implement-issue $n" "$n-$role" "$orch"
 }
 
+# Comandos propios, como en git: "bk foo" que bk no conoce corre bk-foo del PATH o $BK_PLUGINS/foo.
+# Solo nombres de letras, números, - y _ (nada de rutas ni opciones); los de bk siempre ganan.
+find_plugin() {
+  local name="$1" dir="${BK_PLUGINS:-$HOME/.config/bk/plugins}" p
+  [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || return 1
+  p=$(command -v "bk-$name" 2>/dev/null || true)
+  if [ -n "$p" ] && [ -x "$p" ] && [ ! -d "$p" ]; then printf '%s' "$p"; return 0; fi
+  p="$dir/$name"
+  if [ -f "$p" ] && [ -x "$p" ]; then printf '%s' "$p"; return 0; fi
+  return 1
+}
+
 # ---------- main ----------
 ARGS=()
 while [ $# -gt 0 ]; do
@@ -1222,5 +1235,6 @@ case "${1:-}" in
   customize)   exec python3 "$WS/lib/customize.py" ;;
   s|sessions)  exec python3 "$WS/lib/sessions.py" ;;
   -h|--help|help) usage ;;
-  *) usage >&2; exit 2 ;;
+  *) plugin=$(find_plugin "$1") || { usage >&2; exit 2; }
+     shift; exec "$plugin" "$@" ;;
 esac

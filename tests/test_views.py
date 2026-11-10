@@ -28,11 +28,31 @@ class Gentle(unittest.TestCase):
     def test_fit_completa_con_espacios(self):
         self.assertEqual(G.vlen(G.fit("ab", 6)), 6)
 
-    def test_card_float_y_neon_tienen_el_ancho_pedido(self):
-        for style in ("float", "neon"):
-            G.ui = lambda style=style: {**G.DEFAULTS, "cards": style}
-            lines = [l for l in G.card("Título", ["fila"], 30) if l]
-            self.assertTrue(all(G.vlen(l) <= 30 for l in lines), style)
+    def test_un_solo_estilo_de_tarjeta(self):
+        # un ui.json viejo con cards/density no cambia la tarjeta, y alt+, ya no los ofrece
+        import customize
+        base = G.card("t", ["x"], 30)
+        viejo = G.ui()
+        try:
+            G.save_ui({**viejo, "cards": "float", "density": "compact"})
+            self.assertEqual(G.card("t", ["x"], 30), base)
+        finally:
+            G.save_ui(viejo)
+        self.assertTrue(STRIP.sub("", base[0]).startswith("╭"))
+        self.assertTrue(STRIP.sub("", base[-1]).startswith("╰"))
+        self.assertFalse({"cards", "density"} & {c[1] for c in customize.CATS})
+        self.assertFalse({"cards", "density"} & set(G.DEFAULTS))
+
+    def test_id_colour_un_color_por_numero_de_workspace(self):
+        # del 1 al 9 (alt+N) un color distinto cada uno; desde el 10 se repiten (el 10 como el 1)
+        for day in (False, True):
+            self.assertEqual(len({G.id_colour(n, day) for n in range(1, 10)}), 9, day)
+            self.assertEqual(G.id_colour(10, day), G.id_colour(1, day), day)
+        self.assertEqual(G.id_colour(1, False), G.ID_NIGHT[0])
+        self.assertEqual(G.id_colour(1, True), G.ID_DAY[0])
+        self.assertEqual(G.id_colour("3", False), G.ID_NIGHT[2])   # @bk_id llega como texto
+        for malo in (0, "", "x", None, -1):
+            self.assertIsNone(G.id_colour(malo, False), malo)
 
 
 class PaletaUnica(unittest.TestCase):
@@ -49,20 +69,38 @@ class PaletaUnica(unittest.TestCase):
         self.assertEqual((len(r), r[0], r[-1]), (5, G.P["tint"], G.P["rose"]))
         self.assertEqual(G.ramp(1), [G.P["tint"]])   # un solo paso no divide por cero
 
-    def test_curses_attrs_inicia_un_par_por_color_de_la_paleta(self):
+    @staticmethod
+    def _attrs(**kw):
+        """curses_attrs con un curses falso que solo anota los pares: (attrs, {par: (color, fondo)})."""
         pares = {}
         falso = types.SimpleNamespace(init_pair=lambda n, f, b: pares.__setitem__(n, (f, b)),
                                       color_pair=lambda n: n << 8)
         sys.modules["curses"], real = falso, sys.modules.get("curses")
         try:
-            a = G.curses_attrs(base=30, shades=3)
+            return G.curses_attrs(**kw), pares
         finally:
-            sys.modules["curses"] = real
+            if real is None:
+                del sys.modules["curses"]
+            else:
+                sys.modules["curses"] = real
+
+    def test_curses_attrs_inicia_un_par_por_color_de_la_paleta(self):
+        a, pares = self._attrs(base=30, shades=3)
         self.assertEqual(set(a), set(G.CURSES_NAMES) | {"shade0", "shade1", "shade2"})
         for name in G.CURSES_NAMES:
             self.assertEqual(pares[a[name] >> 8], (G.to256(G.P[name]), -1), name)
         self.assertEqual(len(set(a.values())), len(a))       # ningún par pisa a otro
         self.assertEqual(pares[a["shade2"] >> 8][0], G.to256(G.P["rose"]))
+
+    def test_curses_attrs_con_ids_suma_los_numeros_de_workspace_y_el_contexto(self):
+        a, pares = self._attrs(ids=True, shades=2)
+        ids = G.ID_DAY if G.P is G.DAY else G.ID_NIGHT
+        ctx = G.CTX_DAY if G.P is G.DAY else G.CTX_NIGHT
+        self.assertEqual([pares[a[f"id{i}"] >> 8][0] for i in range(len(ids))], ids)
+        self.assertEqual({k: pares[a[k] >> 8][0] for k in ("warn", "high")}, ctx)
+        self.assertEqual(len(set(a.values())), len(a))       # ni con ids y shades se pisan
+        self.assertEqual(len(G.ID_DAY), len(G.ID_NIGHT))     # la tira y sesiones cuentan con el mismo largo
+        self.assertNotIn("id0", self._attrs()[0])
 
     def test_ninguna_vista_define_colores_propios(self):
         lib = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib")
@@ -74,6 +112,12 @@ class PaletaUnica(unittest.TestCase):
                 if re.search(r"init_pair\(|\\033\[38;5;|\\x1b\[38;5;", l):
                     mal.append(f"{f}:{n}: {l.strip()}")
         self.assertEqual(mal, [], "colores fuera de gentle.py: usá G.curses_attrs() o G.ROSE…")
+
+    def test_las_vistas_importan_con_la_paleta(self):
+        # cada vista toma sus colores al importarse o en ui(): que al menos importe sin tocar nada
+        for m in ("agents", "agents_view", "changes", "customize", "new", "palette", "sessions",
+                  "sidebar", "stats", "subwatch"):
+            __import__(m)
 
 
 class EstadosUnicos(unittest.TestCase):
@@ -176,26 +220,18 @@ class Proporciones(unittest.TestCase):
 
     def test_inner_es_lo_que_la_tarjeta_no_corta(self):
         # una fila de exactamente inner(W) entra entera; una más larga se corta con "…"
-        for cards in ("float", "neon"):
-            G.save_ui({**G.ui(), "cards": cards})
-            try:
-                for W in (40, 80):
-                    n = G.inner(W)
-                    self.assertEqual(n, rail.inner(W), cards)
-                    txt = lambda rows: "".join(STRIP.sub("", l) for l in G.card("t", rows, W))
-                    self.assertNotIn("…", txt(["a" * n]), (cards, W))
-                    self.assertIn("…", txt(["a" * (n + 1)]), (cards, W))
-            finally:
-                G.save_ui({**G.ui(), "cards": "float"})
+        for W in (40, 80):
+            n = G.inner(W)
+            self.assertEqual(n, rail.inner(W))
+            txt = lambda rows: "".join(STRIP.sub("", l) for l in G.card("t", rows, W))
+            self.assertNotIn("…", txt(["a" * n]), W)
+            self.assertIn("…", txt(["a" * (n + 1)]), W)
 
     def test_la_tarjeta_mide_exactamente_lo_pedido(self):
         # inner() y la tarjeta usan CARD_PAD: si el margen se corre, el ancho total deja de ser W
-        for cards in ("float", "neon"):
-            G.save_ui({**G.ui(), "cards": cards})
-            for W in (30, 80):
-                filas = [l for l in G.card("Título", ["fila", "a" * 200], W) if l]
-                self.assertEqual({G.vlen(l) for l in filas}, {W}, (cards, W))
-        G.save_ui({**G.ui(), "cards": "float"})
+        for W in (30, 80):
+            filas = G.card("Título", ["fila", "a" * 200], W)
+            self.assertEqual({G.vlen(l) for l in filas}, {W}, W)
 
     def test_layout_conf_lo_lee_gentle(self):
         self.assertEqual((G.SIDE_W, G.RAIL_PCT, G.RAIL_MIN), (5, 34, 46))
