@@ -15,19 +15,27 @@ eval "$(sed -n '/^sq()/p' "$ROOT/bin/bk")"
 got=$(eval "printf '%s' $(sq "Seguí: it's ñ")")
 check_eq "$got" "Seguí: it's ñ" "sq conserva acentos y comillas"
 
+# El instalador corre con un tmux falso en el PATH: con BK_YES=s hace "tmux source-file" de tu tmux.conf, y sin
+# esto (o sin TMUX_TMPDIR) cargaría el bk.conf de este árbol en tu servidor de tmux de verdad.
+mkdir -p "$TMP/fake"
+printf '#!/bin/sh\n[ "$1" = -V ] && { echo "tmux 3.4"; exit 0; }\necho "$*" >>"%s"\n' "$TMP/tmux.log" >"$TMP/fake/tmux"
+chmod +x "$TMP/fake/tmux"
+install_sh() { env -u TMUX -u TMUX_PANE PATH="$TMP/fake:$PATH" bash "$ROOT/install.sh" "$@"; }
+
 # Instalador en un HOME vacío, sin terminal: no toca tmux.conf ni settings.json
 H="$TMP/home"; mkdir -p "$H/.claude"; echo '{"theme":"dark"}' >"$H/.claude/settings.json"
-HOME="$H" BK_REPO="$ROOT" bash "$ROOT/install.sh" </dev/null >/dev/null 2>&1; check $? "install.sh termina bien"
+HOME="$H" BK_REPO="$ROOT" install_sh </dev/null >/dev/null 2>&1; check $? "install.sh termina bien"
 [ -L "$H/.local/bin/bk" ]; check $? "enlaza ~/.local/bin/bk"
 check_eq "$(jq -c .hooks "$H/.claude/settings.json")" null "sin terminal no registra el hook"
 [ ! -f "$H/.tmux.conf" ]; check $? "sin terminal no toca tmux.conf"
 
 # Con BK_YES=s registra el hook en los eventos y lo saca al desinstalar
 rm -rf "$H/.bk-shell"
-HOME="$H" BK_REPO="$ROOT" BK_YES=s bash "$ROOT/install.sh" </dev/null >/dev/null 2>&1
+HOME="$H" BK_REPO="$ROOT" BK_YES=s install_sh </dev/null >/dev/null 2>&1
 check_eq "$(jq '.hooks | keys | length' "$H/.claude/settings.json")" 12 "con BK_YES=s registra el hook en 12 eventos"
 grep -q 'bk-shell/tmux/bk.conf' "$H/.tmux.conf"; check $? "con BK_YES=s carga bk.conf en tmux.conf"
-HOME="$H" bash "$ROOT/install.sh" --uninstall >/dev/null 2>&1   # el de este árbol, no el clon (que es el último commit)
+grep -q "^source-file $H/.tmux.conf" "$TMP/tmux.log"; check $? "y lo recarga con el tmux del PATH (acá el falso, nunca el tuyo)"
+HOME="$H" install_sh --uninstall >/dev/null 2>&1   # el de este árbol, no el clon (que es el último commit)
 check_eq "$(jq -c .hooks "$H/.claude/settings.json")" "{}" "desinstalar saca el hook"
 grep -q 'bk-shell' "$H/.tmux.conf"; [ $? -ne 0 ]; check $? "desinstalar saca bk.conf de tmux.conf"
 [ "$(jq -r .theme "$H/.claude/settings.json")" = dark ]; check $? "no toca el resto de settings.json"
@@ -36,7 +44,7 @@ grep -q 'bk-shell' "$H/.tmux.conf"; [ $? -ne 0 ]; check $? "desinstalar saca bk.
 # saca sin tocar un hook ajeno. HOME de prueba con un espacio en la ruta: el comando queda entre comillas.
 H2="$TMP/otro home"; mkdir -p "$H2/.claude"
 echo '{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"ajeno.sh"}]}]}}' >"$H2/.claude/settings.json"
-for _ in 1 2; do HOME="$H2" BK_REPO="$ROOT" BK_YES=s bash "$ROOT/install.sh" </dev/null >/dev/null 2>&1; done
+for _ in 1 2; do HOME="$H2" BK_REPO="$ROOT" BK_YES=s install_sh </dev/null >/dev/null 2>&1; done
 S2="$H2/.claude/settings.json"
 ctx="python3 '$H2/.bk-shell/lib/context_hook.py'"; guard="python3 '$H2/.bk-shell/lib/tmux_guard.py'"
 n_ctx() { jq --arg c "$ctx" "[.hooks.$1[]?.hooks[]? | select(.command == \$c)] | length" "$S2"; }
@@ -45,9 +53,31 @@ check_eq "$(jq -r --arg c "$guard" '[.hooks.PreToolUse[] | select(any(.hooks[]; 
   Bash "con BK_YES=s registra la baranda de tmux en PreToolUse con matcher Bash, una vez"
 check_eq "$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$S2")" "$H2/.bk-shell/hooks/agent_state.sh" "el hook de estado sigue igual"
 (cd "$TMP" && sh -c "$ctx" </dev/null >/dev/null 2>&1); check $? "el comando registrado corre aunque la ruta tenga un espacio"
-HOME="$H2" bash "$ROOT/install.sh" --uninstall >/dev/null 2>&1
+HOME="$H2" install_sh --uninstall >/dev/null 2>&1
 check_eq "$(jq -c .hooks "$S2")" '{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"ajeno.sh"}]}]}' \
   "desinstalar saca el aviso de contexto y la baranda, y deja el hook ajeno"
+
+# Quien ya los registró a mano como dice el README (~/.bk-shell/…, sin comillas, o "$HOME/…" entre comillas
+# dobles) y reinstala no queda con dos: el mismo comando escrito de otra forma cuenta como el mismo, y
+# desinstalar saca también esos.
+H3="$TMP/home readme"; mkdir -p "$H3/.claude"; S3="$H3/.claude/settings.json"
+cat >"$S3" <<'JSON'
+{"hooks": {
+  "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "python3 ~/.bk-shell/lib/context_hook.py"}]}],
+  "PostToolUse": [{"hooks": [{"type": "command", "command": "python3 \"$HOME/.bk-shell/lib/context_hook.py\""}]}],
+  "PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "python3 ~/.bk-shell/lib/tmux_guard.py"}]},
+                 {"matcher": "Bash", "hooks": [{"type": "command", "command": "python3 ~/otra/tmux_guard.py"}]}]
+}}
+JSON
+HOME="$H3" BK_REPO="$ROOT" BK_YES=s install_sh </dev/null >/dev/null 2>&1
+n_lib() { jq --arg f "$2" "[.hooks.$1[]?.hooks[]? | select(.command | test(\"bk-shell/lib/\" + \$f))] | length" "$S3"; }
+check_eq "$(n_lib UserPromptSubmit context_hook)/$(n_lib PostToolUse context_hook)/$(n_lib PreToolUse tmux_guard)" "1/1/1" \
+  "reinstalar con los hooks del README (~ o \$HOME) no los duplica"
+check_eq "$(jq -r '.hooks.UserPromptSubmit[0].hooks[0].command' "$S3")" "python3 ~/.bk-shell/lib/context_hook.py" \
+  "y deja el que escribiste vos como estaba"
+HOME="$H3" install_sh --uninstall >/dev/null 2>&1
+check_eq "$(jq -c '[.hooks[][].hooks[].command]' "$S3")" '["python3 ~/otra/tmux_guard.py"]' \
+  "desinstalar saca también los del README y deja uno de otra carpeta con el mismo nombre"
 
 # bk mode <rol>: la 3.ª columna de roles.yml (el del proyecto manda), bk si no tiene; un rol que no existe falla.
 # role_spec sigue devolviendo solo provider/modelo.

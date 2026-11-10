@@ -119,12 +119,13 @@ quedó sin commitear, en una sola sesión de tmux.
   `--relaunch` también cambia el chat principal, retomando su conversación. `bk run … --account X` solo para un
   lanzamiento; `bk account use default` vuelve a la de siempre (`bk account login default` rehace su login). El riel muestra siempre la cuenta de la sesión
   en Status, también la default, con el mail con el que está logueada (el nombre de la cuenta si no tiene login;
-  lo pregunta cada 5 min con `accounts.py list --json`).
+  lo pregunta cada 5 min con `accounts.py list --json`, en segundo plano: el riel no espera, y hasta que llega
+  muestra el nombre).
 - **Contexto a la vista**: cada llamada de una sesión vuelve a leer (y a pagar) todo su contexto. Desde 200k
   (ámbar) y 400k (rojo) la tira marca la sesión con `▪` (el número, en el tooltip), el riel muestra el de cada agente
   y el de este chat con la sugerencia de `/clear` o un chat nuevo, y `bk monitor` lo tiene en la columna CTX.
   Los umbrales se cambian con `BK_CTX_WARN` y `BK_CTX_HIGH` (en tokens: `150000` o `150k`; el rojo nunca queda antes
-  que el ámbar). Opcional: `lib/context_hook.py` se lo dice al agente, con los mismos umbrales (ver *Aviso de contexto*).
+  que el ámbar; un valor que no es un número deja el de siempre). Opcional: `lib/context_hook.py` se lo dice al agente, con los mismos umbrales (ver *Aviso de contexto*).
 - **Dash**: `bk dash` es una franja de estado con dos tablas que se redibujan cada 5 s: los agentes (ventana,
   proyecto, rol, modelo, estado, hace cuánto) y el uso del día por modelo. `bk dash --once` la dibuja una vez.
 - **Stats**: mapa de actividad, modelo favorito, rachas y costo equivalente en API de todo tu historial de Claude Code.
@@ -149,8 +150,9 @@ Clona en `~/.bk-shell`, enlaza `~/.local/bin/bk` y **te pregunta** antes de:
 - registrar el aviso de contexto (`lib/context_hook.py`) y la baranda de tmux (`lib/tmux_guard.py`), cada uno con
   su pregunta (ver abajo).
 
-Sin terminal (CI, un pipe sin tty) no toca nada; `BK_YES=s` contesta que sí a todo. `--uninstall` saca los tres hooks
-de `settings.json` y deja los tuyos.
+Sin terminal (CI, un pipe sin tty) no toca nada; `BK_YES=s` contesta que sí a todo. Si ya registraste un hook a mano
+(como en los ejemplos de abajo, con `~/.bk-shell/…` o `$HOME/.bk-shell/…`), reinstalar no lo duplica. `--uninstall`
+saca los tres hooks de `settings.json`, también los que sumaste a mano así, y deja los tuyos.
 
 **macOS:** los atajos `alt+…` necesitan que Option mande Alt.
 Ghostty: `macos-option-as-alt = left` · iTerm2: Profiles → Keys → Left Option key: Esc+ ·
@@ -193,7 +195,9 @@ sumala a mano en `~/.claude/settings.json`:
 } }
 ```
 
-Actualizar: volvé a correr el instalador. Desinstalar: `bash ~/.bk-shell/install.sh --uninstall`.
+Actualizar: volvé a correr el instalador (no repite los hooks que ya tenés). Desinstalar:
+`bash ~/.bk-shell/install.sh --uninstall`. Si lo probás con otro `HOME`, corrélo con `env -u TMUX TMUX_TMPDIR=$(mktemp -d)`:
+al sumar los atajos recarga tu `tmux.conf` en el servidor de tmux, y sin eso sería el tuyo.
 
 ## Primeros pasos
 

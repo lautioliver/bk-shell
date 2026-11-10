@@ -64,6 +64,8 @@ check_eq "$(BK_CTX_HIGH=300k ctx level 300000)/$(BK_CTX_HIGH=300k ctx level 2999
 check_eq "$(BK_CTX_WARN=nada BK_CTX_HIGH=-5 ctx level 200000)/$(BK_CTX_WARN=nada BK_CTX_HIGH=-5 ctx level 400000)" "warn/high" \
   "valores que no son un número positivo: los de siempre"
 check_eq "$(BK_CTX_WARN=500k ctx level 450000)/$(BK_CTX_WARN=500k ctx level 500000)" "-/high" "el rojo nunca antes que el ámbar"
+check_eq "$(BK_CTX_WARN=infk BK_CTX_HIGH=-infk ctx level 200000 2>&1)/$(BK_CTX_WARN=infk BK_CTX_HIGH=-infk ctx level 400000 2>&1)" "warn/high" \
+  "BK_CTX_WARN=infk o BK_CTX_HIGH=-infk no rompen usage: dejan el de siempre"
 hook=$(printf '{"hook_event_name":"UserPromptSubmit","session_id":"s1","transcript_path":"%s"}' "$TMP/c.jsonl" \
   | BK_CTX_WARN=150k BK_CONTEXT_HOOK_STATE="$TMP/hook" python3 "$ROOT/lib/context_hook.py")
 case "$hook" in *"Llevás 151k de contexto"*) r=0 ;; *) r=1 ;; esac

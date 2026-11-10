@@ -18,6 +18,7 @@ lesson sin-fecha 'type: manual\nscope: global\nmide: caso no cubierto'
 lesson sin-medir 'type: manual\nscope: global\naccepted: 2026-11-10\nmide: -   # del reviewer'
 lesson otro-repo 'type: review_finding\nsignature: "review_finding::metadatos del PR::otro"\nscope: otro\naccepted: 2026-11-10T00:00Z'
 lesson pocos     'type: manual\nscope: global\naccepted: 2026-11-10\nmide: decisión no aprobada'
+lesson sin-zona  'type: review_finding\nsignature: "review_finding::metadatos del PR::kit"\nscope: kit\naccepted: 2026-11-10T00:00'
 printf -- '---\nstatus: proposed\ntype: manual\naccepted: 2026-11-10\nmide: docs desactualizados\n---\n' >"$L/propuesta.md"
 
 # Reviews: "metadatos" = un hallazgo de metadatos del PR; "docs" = docs desactualizados; "ok" = ronda sin hallazgos
@@ -54,6 +55,16 @@ check_eq "$(v sin-medir)" "no se mide" "mide: - no se mide"
 check_eq "$(v otro-repo)" "poca muestra" "scope otro: solo mira las rondas de otro (1 ronda: poca muestra)"
 check_eq "$(v pocos)" "pocos casos" "un solo hallazgo de la clase antes: pocos casos, no un veredicto"
 check_eq "$(jq -r '[.[] | select(.lesson == "propuesta")] | length' <<<"$J")" 0 "las propuestas no entran"
+check_eq "$(v sin-zona)" baja "accepted sin Z ni offset (2026-11-10T00:00): hora local, se mide igual"
+
+# --days sin número y un vault que no existe: avisan y salen con error (no un traceback ni un 0 callado)
+out=$("$ROOT/bin/bk" learn effect --no-write --days 2>&1); rc=$?
+[ $rc -ne 0 ] && grep -q -- '--days necesita un número' <<<"$out" && ! grep -q Traceback <<<"$out"
+check $? "bk learn effect --days sin número: dice qué poner y sale con error"
+out=$("$ROOT/bin/bk" learn effect --no-write --days cero 2>&1); rc=$?
+[ $rc -ne 0 ] && grep -q -- '--days necesita un número' <<<"$out"; check $? "bk learn effect --days cero: también"
+out=$(BARRILETE_VAULT="$TMP/no-existe" "$ROOT/bin/bk" learn effect --no-write 2>&1); rc=$?
+[ $rc -ne 0 ] && grep -q "no existe el vault $TMP/no-existe" <<<"$out"; check $? "bk learn effect con un vault que no existe avisa y sale con error"
 
 python3 "$ROOT/lib/effect.py" >/dev/null
 grep -q '| \[\[baja\]\] | metadatos del PR |' "$BARRILETE_VAULT/agents/efecto.md"

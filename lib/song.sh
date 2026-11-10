@@ -335,9 +335,8 @@ case "${1:-}" in
   genres)          genres ;;
   ui)              command -v mpv >/dev/null || die "falta mpv (brew install mpv)"
                    running || play_key techno >/dev/null
-                   # El espectro solo mientras la UI está abierta: lo agrega ya (y song_ui.py, en cada estación
-                   # nueva) y lo saca al salir
-                   prop af | grep -q '"viz"' || ipc "$(jq -cn --arg f "$VIZ" '{command: ["af", "add", $f]}')" >/dev/null
+                   # El espectro solo mientras la UI está abierta: song_ui.py lo agrega en su primer cuadro (y en
+                   # cada estación nueva) y lo saca al salir
                    BK_SONG_VIZ="$VIZ" exec python3 "$LIB/song_ui.py" "$SOCK" "$LIB/song.sh" ;;
   now|status)      cmd_now ;;
   hist|history)    shift; cmd_hist "${1:-15}" ;;

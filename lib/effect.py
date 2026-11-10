@@ -7,7 +7,7 @@ trabajó con la regla". Las rondas salen de GitHub (todas las reviews con seccio
 también las que no tienen hallazgos: los eventos de bk learn solo guardan las que tienen).
 
 Frontmatter de la lección que usa:
-  accepted: 2026-11-04 o 2026-11-04T19:24Z   cuándo se aceptó (sin esto no se mide)
+  accepted: 2026-11-04 o 2026-11-04T19:24Z   cuándo se aceptó (sin esto no se mide; sin Z, hora local)
   mide: metadatos del PR, docs desactualizados   clases de hallazgo que la regla debería bajar
         (sin `mide`: la de su signature si es review_finding; `mide: -` = no se mide)
   scope: mi-proyecto | global
@@ -55,11 +55,11 @@ def parse_ts(s):
     if not s:
         return None
     try:
-        if len(s) == 10:
-            return datetime.fromisoformat(s).astimezone()   # fecha sola: medianoche local
-        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
     except ValueError:
         return None
+    # Sin Z ni offset (2026-11-04 o 2026-11-04T19:24): hora local, así se puede comparar con createdAt
+    return dt.astimezone() if dt.tzinfo is None else dt
 
 
 def lessons():
@@ -207,7 +207,14 @@ def render(res, days):
 def main(argv):
     if not VAULT:
         sys.exit(f"bk learn effect: {VAULT_HELP}")
-    days = int(argv[argv.index("--days") + 1]) if "--days" in argv else 30
+    if not os.path.isdir(VAULT):
+        sys.exit(f"bk learn effect: no existe el vault {VAULT} (BARRILETE_VAULT)")
+    days = 30
+    if "--days" in argv:
+        i = argv.index("--days") + 1
+        days = int(argv[i]) if i < len(argv) and argv[i].isdigit() else 0
+        if days <= 0:
+            sys.exit("bk learn effect: --days necesita un número de días mayor que 0, por ejemplo  --days 30")
     res = measure(days)
     if "--json" in argv:
         print(json.dumps(res, ensure_ascii=False, default=str))

@@ -533,9 +533,12 @@ class CuentaRiel(unittest.TestCase):
     """La fila Cuenta del riel: siempre, también con la cuenta default, con el mail logueado (mails de prueba)."""
 
     def setUp(self):
-        for name in ("sh", "usage", "roles_profile"):
+        self._real_bg = rail._bg
+        for name in ("sh", "usage", "roles_profile", "_bg"):
             self.addCleanup(setattr, rail, name, getattr(rail, name))
         self.addCleanup(rail._who.update, dict(rail._who))
+        rail._bg = lambda fn: fn()   # la lista en el momento; test_no_espera_la_lista prueba el hilo de verdad
+        rail._who.update(v={}, busy=False)
         self.addCleanup(rail._account.update, dict(rail._account))
         rail.usage = lambda: {}
         rail.roles_profile = lambda top: "—"
@@ -572,6 +575,29 @@ class CuentaRiel(unittest.TestCase):
     def test_sin_lista_de_cuentas_el_nombre(self):
         rail.sh = lambda *a, **k: "{roto" if a[0] != "tmux" else ""
         self.assertEqual(self.account(""), "default")
+
+    def test_no_espera_la_lista(self):
+        """accounts.py list tarda segundos: el riel no se congela, muestra el nombre y el mail cuando llega."""
+        rail._bg = self._real_bg
+        slow, calls = rail.sh, []
+
+        def lento(*a, **k):
+            if a[0] != "tmux":
+                calls.append(a)
+                time.sleep(1)
+            return slow(*a, **k)
+        rail.sh = lento
+        t0 = time.time()
+        self.assertEqual(self.account("trabajo"), "trabajo")
+        self.assertLess(time.time() - t0, 0.5)
+        self.account("trabajo")   # mientras tanto no lanza otra consulta
+        for _ in range(40):
+            if not rail._who["busy"]:
+                break
+            time.sleep(0.1)
+        rail._account["t"] = 0
+        self.assertEqual(STRIP.sub("", rail.session_account()), "otra@example.com")
+        self.assertEqual(len(calls), 1)
 
     def test_fila_cuenta_siempre_en_status(self):
         self.opts = {}

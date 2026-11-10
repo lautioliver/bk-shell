@@ -36,6 +36,9 @@ check_eq "$n" "0 '' 0" "sin vault: checkpoints no lista lecciones y monitor no a
 mkdir -p "$TMP/viejo/agents/lessons"
 out=$(env -u TMUX -u TMUX_PANE BK_VAULT="$TMP/viejo" "$BK" lessons 2>&1)
 check_eq "$out" "no hay lecciones por revisar" "BK_VAULT sirve como alias de BARRILETE_VAULT"
+# y del lado de Python (deviations.vault(), el de learn, effect, metrics, checkpoints y monitor)
+out=$(env -u TMUX -u TMUX_PANE BK_VAULT="$TMP/viejo" BK_LEARN_STATE="$TMP/viejo-state.json" "$BK" learn --quiet 2>&1); rc=$?
+check "$([ "$rc" -eq 0 ] && [ -f "$TMP/viejo/agents/INDEX.md" ] && echo 0 || echo 1)" "bk learn con BK_VAULT escribe en ese vault ($out)"
 
 # --- bk learn con un vault y transcripts de prueba ---
 export BARRILETE_VAULT="$TMP/vault"; mkdir -p "$BARRILETE_VAULT"

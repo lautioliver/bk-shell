@@ -64,10 +64,18 @@ rm -f "$TMP/warm.log"
 check_eq "$(warms)" "0" "con BK_NO_WARM=1 (tests/lib.sh), launch no corre agents.py warm"
 rm -f "$TMP/fake/python3"
 git -C "$TMP/repo" remote add origin https://github.com/demo/proyecto.git 2>/dev/null
-title() { PATH="$TMP/fake:$PATH" python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import agents as A; print(A.title_for(sys.argv[2], 7, {}, True) or '-')" "$ROOT/lib" "$TMP/repo"; }
+# HOME y BK_CACHE_DIR al tmp: title_for guarda lo que contesta gh en titles.json (nunca el ~/.cache/bk de verdad)
+title() { HOME="$TMP/home" BK_CACHE_DIR="$TMP/cache" PATH="$TMP/fake:$PATH" python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import agents as A; print(A.title_for(sys.argv[2], 7, {}, True) or '-')" "$ROOT/lib" "$TMP/repo"; }
 check_eq "$(title)/$(cat "$TMP/gh.log" 2>/dev/null | wc -l | tr -d ' ')" "-/0" "con BK_NO_WARM=1, title_for no llama a gh"
 check_eq "$(unset BK_NO_WARM; title)/$(wc -l <"$TMP/gh.log" | tr -d ' ')" \
   "Un título/1" "sin BK_NO_WARM, title_for le pregunta a gh (el control)"
+# pr_of_branch (el PR de la rama de un worktree), igual: un gh falso que contesta el número 240
+git init -q -b una-rama "$TMP/wt" && git -C "$TMP/wt" remote add origin https://github.com/demo/proyecto.git
+printf '#!/bin/sh\necho "gh $*" >>"%s"\necho 240\n' "$TMP/gh-pr.log" >"$TMP/fake/gh"
+pr() { HOME="$TMP/home" BK_CACHE_DIR="$TMP/cache" PATH="$TMP/fake:$PATH" python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import agents as A; print(A.pr_of_branch(sys.argv[2], {}, True) or '-')" "$ROOT/lib" "$TMP/wt"; }
+check_eq "$(pr)/$(cat "$TMP/gh-pr.log" 2>/dev/null | wc -l | tr -d ' ')" "-/0" "con BK_NO_WARM=1, pr_of_branch no llama a gh"
+check_eq "$(unset BK_NO_WARM; pr)/$(wc -l <"$TMP/gh-pr.log" | tr -d ' ')" "240/1" "sin BK_NO_WARM, pr_of_branch le pregunta a gh (el control)"
+check "$([ -f "$TMP/cache/titles.json" ] && echo 0 || echo 1)" "lo que contesta gh queda en el titles.json del tmp"
 
 # --- bk _ids / _nth: número fijo por workspace ---
 # list-sessions -F '#{session_created}<TAB>#{session_name}<TAB>#{@bk_id}'

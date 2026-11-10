@@ -4,7 +4,7 @@
 Solo lectura; se redibuja cada 1 s y, con el pane oculto, no dibuja. El detalle está en los overlays: alt+a agentes, alt+g cambios,
 alt+k comandos, alt+s sesiones.
 """
-import glob, json, os, subprocess, sys, time
+import glob, json, os, subprocess, sys, threading, time
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import gentle as G
@@ -30,9 +30,9 @@ def in_project(path):
     return p == PROJECT or p.startswith(PROJECT + "/") or p.startswith(PROJECT + "-wt/")
 
 
-def sh(*a, cwd=None):
+def sh(*a, cwd=None, timeout=4):
     try:
-        return subprocess.run(a, capture_output=True, text=True, timeout=4, cwd=cwd).stdout
+        return subprocess.run(a, capture_output=True, text=True, timeout=timeout, cwd=cwd).stdout
     except Exception:
         return ""
 
@@ -120,19 +120,34 @@ def roles_profile(top):
 
 _profile = {"t": 0, "v": "—"}
 _account = {"t": 0, "v": ""}
-_who = {"t": 0, "v": {}}
+_who = {"t": 0, "v": {}, "busy": False}
+
+
+def _bg(fn):
+    """Corre fn en un hilo aparte (los tests lo cambian por una llamada directa)."""
+    threading.Thread(target=fn, daemon=True).start()
+
+
+def _fetch_who():
+    """accounts.py list --json corre claude/codex auth status por cada cuenta, uno tras otro: segundos. Por eso va
+    en segundo plano y con más margen que los 4 s de sh(); el riel solo lee lo que deja en _who."""
+    v = {}
+    try:
+        got = json.loads(sh(sys.executable, os.path.join(HERE, "accounts.py"), "list", "--json", timeout=60) or "[]")
+        v = {a["name"]: a.get("who") or "" for a in got
+             if isinstance(a, dict) and a.get("provider") == "claude" and a.get("logged_in")}
+    except Exception:
+        v = {}
+    finally:
+        _who.update(v=v, t=time.time(), busy=False)   # aunque falle: no queda trabado en "busy"
 
 
 def account_who(name):
-    """El mail con el que está logueada una cuenta de claude (accounts.py list --json), o "". Cada 5 min."""
-    if time.time() - _who["t"] > 300:
-        try:
-            got = json.loads(sh(sys.executable, os.path.join(HERE, "accounts.py"), "list", "--json") or "[]")
-            _who["v"] = {a["name"]: a.get("who") or "" for a in got
-                         if isinstance(a, dict) and a.get("provider") == "claude" and a.get("logged_in")}
-        except (ValueError, TypeError, KeyError):
-            _who["v"] = {}
-        _who["t"] = time.time()
+    """El mail con el que está logueada una cuenta de claude, o "" si todavía no se sabe o no tiene login.
+    Nunca espera: cada 5 min pide la lista en segundo plano (_fetch_who) y mientras tanto devuelve la última."""
+    if time.time() - _who["t"] > 300 and not _who["busy"]:
+        _who["busy"] = True
+        _bg(_fetch_who)
     return _who["v"].get(name, "")
 
 

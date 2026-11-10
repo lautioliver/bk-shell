@@ -23,6 +23,23 @@ EVENTS="SessionStart UserPromptSubmit PreToolUse PostToolUse PostToolUseFailure 
 shq() { python3 -c 'import shlex, sys; print(shlex.quote(sys.argv[1]))' "$1" 2>/dev/null || printf '%s' "$1"; }   # una ruta con espacios o ' no se parte
 CTX_HOOK="python3 $(shq "$DIR/lib/context_hook.py")"
 GUARD_HOOK="python3 $(shq "$DIR/lib/tmux_guard.py")"
+# Para saber si un hook ya está: el mismo comando escrito de otra forma (el del README, con ~ o $HOME y sin
+# comillas, o con comillas dobles) cuenta como el mismo. same(a, b) compara las palabras con ~ y $HOME expandidos.
+SAME_PY='
+import os, shlex
+def words(c):
+    if not isinstance(c, str):
+        return [c]
+    try:
+        ws = shlex.split(c)
+    except ValueError:
+        ws = c.split()
+    home = os.path.expanduser("~")
+    return [os.path.normpath(os.path.expanduser(w).replace("${HOME}", home).replace("$HOME", home)) if "/" in w or w.startswith("~") else w
+            for w in ws]
+def same(a, b):
+    return words(a) == words(b)
+'
 
 c() { printf '\033[38;2;240;149;200m%s\033[0m' "$*"; }
 say() { printf '%s %s\n' "$(c ✿)" "$*"; }
@@ -44,13 +61,13 @@ uninstall() {
   local tc; tc=$(tmux_conf)
   [ -f "$tc" ] && sed -i.bk-bak -e '/^# bk shell$/d' -e '/bk-shell\/tmux\/bk.conf/d' "$tc" && say "saqué bk.conf de $tc"
   if [ -f "$SETTINGS" ]; then
-    python3 - "$SETTINGS" "$HOOK" "$CTX_HOOK" "$GUARD_HOOK" <<'PY'
+    { printf '%s\n' "$SAME_PY"; cat <<'PY'; } | python3 - "$SETTINGS" "$HOOK" "$CTX_HOOK" "$GUARD_HOOK"
 import json, sys
 p, *mine = sys.argv[1:]
 s = json.load(open(p))
 for ev, groups in list(s.get("hooks", {}).items()):
     for g in groups:
-        g["hooks"] = [h for h in g.get("hooks", []) if h.get("command") not in mine]
+        g["hooks"] = [h for h in g.get("hooks", []) if not any(same(h.get("command"), m) for m in mine)]
     s["hooks"][ev] = [g for g in groups if g.get("hooks")]
     if not s["hooks"][ev]:
         del s["hooks"][ev]
@@ -109,15 +126,15 @@ add_hook() {
   local cmd="$1" matcher="$2"; shift 2
   mkdir -p "$(dirname "$SETTINGS")"
   if [ "$backed_up" -eq 0 ] && [ -f "$SETTINGS" ]; then cp "$SETTINGS" "$SETTINGS.bk-backup"; backed_up=1; fi
-  python3 - "$SETTINGS" "$cmd" "$matcher" "$@" <<'PY'
+  { printf '%s\n' "$SAME_PY"; cat <<'PY'; } | python3 - "$SETTINGS" "$cmd" "$matcher" "$@"
 import json, os, sys
 p, hook, matcher, *events = sys.argv[1:]
 s = json.load(open(p)) if os.path.exists(p) else {}
 hooks = s.setdefault("hooks", {})
 for ev in events:
     groups = hooks.setdefault(ev, [])
-    if any(h.get("command") == hook for g in groups for h in g.get("hooks", [])):
-        continue
+    if any(same(h.get("command"), hook) for g in groups for h in g.get("hooks", [])):
+        continue   # ya está (aunque lo hayas escrito a mano como dice el README)
     g = {"hooks": [{"type": "command", "command": hook}]}
     if matcher:
         g = {"matcher": matcher, **g}

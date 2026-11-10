@@ -79,7 +79,7 @@ def _ctx_env(name, default):
     v = (os.environ.get(name) or "").strip().lower()
     try:
         n = int(float(v[:-1]) * 1000) if v.endswith("k") else int(v)
-    except ValueError:
+    except (ValueError, OverflowError):   # "nada", "infk"
         return default
     return n if n > 0 else default
 
