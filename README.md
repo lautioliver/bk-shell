@@ -126,8 +126,6 @@ quedó sin commitear, en una sola sesión de tmux.
   y el de este chat con la sugerencia de `/clear` o un chat nuevo, y `bk monitor` lo tiene en la columna CTX.
   Los umbrales se cambian con `BK_CTX_WARN` y `BK_CTX_HIGH` (en tokens: `150000` o `150k`; el rojo nunca queda antes
   que el ámbar; un valor que no es un número deja el de siempre). Opcional: `lib/context_hook.py` se lo dice al agente, con los mismos umbrales (ver *Aviso de contexto*).
-- **Dash**: `bk dash` es una franja de estado con dos tablas que se redibujan cada 5 s: los agentes (ventana,
-  proyecto, rol, modelo, estado, hace cuánto) y el uso del día por modelo. `bk dash --once` la dibuja una vez.
 - **Stats**: mapa de actividad, modelo favorito, rachas y costo equivalente en API de todo tu historial de Claude Code.
 
 ## Requisitos
@@ -231,8 +229,8 @@ bk help            # todo lo demás
 
 - Todo es tmux: cada workspace es una sesión `bk-<proyecto>`; los agentes, ventanas de la sesión `agents`.
 - El hook (`hooks/agent_state.sh`) escribe el estado de cada sesión de Claude Code en `~/.cache/bk/agents/`
-  (`BK_STATE_DIR` cambia la carpeta); el riel, la tira, el footer, `bk ls`, `bk s`, `bk monitor` y `bk dash` lo
-  leen de ahí.
+  (`BK_STATE_DIR` cambia la carpeta); el riel, la tira, el footer, `bk ls`, `bk s` y `bk monitor` lo leen
+  de ahí.
 - Las tareas (`lib/tasks.py`) viven en `${XDG_STATE_HOME:-~/.local/state}/bk/tasks/<proyecto>/<id>/`: `task.json`
   (el estado) y `events.jsonl` (un hecho por línea, con `seq`). El agente recibe esa carpeta en `BK_TASK_DIR`.
   Nada se borra solo (`BK_TASKS_DIR` cambia la carpeta).
