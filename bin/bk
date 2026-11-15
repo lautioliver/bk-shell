@@ -1,17 +1,22 @@
 #!/bin/bash
 # bk — bk shell: workspace de agentes de Barrilete Kit en la terminal (tmux + Claude Code).
 # Cada agente corre en una ventana de la sesión tmux "agents", con BARRILETE_ROLE/MODEL/ISSUE
-# en el entorno (la barra de Sketchybar lo etiqueta con eso).
+# en el entorno (una barra de estado u otro script lo pueden leer de ahí).
 set -euo pipefail
 
 WS="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
-# Proporciones del workspace (SIDE_W, RAIL_PCT, RAIL_MIN): lib/layout.conf, la misma fuente que lib/gentle.py
+# Proporciones del workspace (SIDE_W, RAIL_PCT, RAIL_MIN, LAYOUT_CHAT, LAYOUT_RAIL): lib/layout.conf, la misma fuente que lib/gentle.py
 # shellcheck source=lib/layout.conf
 . "$WS/lib/layout.conf"
 SESSION="${BK_SESSION:-agents}"
 STATE_DIR="${BK_STATE_DIR:-$HOME/.cache/bk/agents}"
 export BK_STATE_DIR="$STATE_DIR"   # lib/agents.py lee el mismo estado
 DRY=0
+# Un chat que heredó el entorno de un agente (launch-env puede darle al agente el gh de un bot, con su
+# config en la caché de bk) no usa ese gh: bk y lo que bk corre vuelven al tuyo.
+case "${GH_CONFIG_DIR:-}" in
+  "${BK_CACHE_DIR:-$HOME/.cache/bk}/bot"|"${BK_CACHE_DIR:-$HOME/.cache/bk}/bot/"*) unset GH_CONFIG_DIR GH_TOKEN ;;
+esac
 TASKS="$WS/lib/tasks.py"   # tareas de los agentes (ADR-005 del kit): task.json + events.jsonl
 
 # Los atajos de tmux pasan BK_FROM/BK_CLIENT a los popups, pero el comando de display-popup no
@@ -29,17 +34,23 @@ usage() {
 uso: bk [comando] [--dry-run]
 
   (sin comando)     el workspace del proyecto de esta carpeta: chat + riel (sesión tmux "bk-<proyecto>";
-                    si ya existe, vuelve a ella). Uno por proyecto, cada uno en su escritorio
+                    si ya existe, vuelve a ella y, si su chat se cerró, lo repone). Uno por proyecto
+  --dry-run         dice qué haría y no abre ni crea nada (lanzamientos, bk, bk chat, --rama, --suelto, --desde)
   rerun [--go] [pr…]  volver a correr los checks de Actions que fallaron (sin --go: solo muestra)
   new | n           popup "Nuevo": chat nuevo en este proyecto u otro workspace (alt+n, o + en la tira)
-  chat [--suelto]   otro chat del proyecto, como un workspace más en la tira (alt+N); --suelto: sin
+  chat [--suelto]   otro chat del proyecto, como un workspace más en la tira (con su número fijo: alt+N); --suelto: sin
                     proyecto, en el lugar del chat (alt+q vuelve)
   chat --rama N     otro chat en su propio worktree y rama chat/N (desde la rama principal); si existe, lo reusa
   chat --nombre X   el chat nuevo se llama X (bk ls, bk say X "…", bk go X); también con --rama
+  chat --desde N    un workspace más del proyecto que arranca con el resumen que dejó el chat del workspace N
+                    (bk handoff), en su carpeta y con su cuenta; después pregunta si cierra el viejo
+  handoff [N]       pedirle al chat del workspace N (o de este) el resumen para seguir en un chat nuevo, con
+                    una plantilla fija; --listos: los resúmenes listos (↪ en la tira y en bk s)
   name ["nombre"]   nombrar el chat de este workspace (sin nombre: el de /rename o el título de Claude; - lo borra)
   open [proyecto]   abrir el workspace de otro proyecto en una ventana nueva (sin argumento: los abiertos)
   plan "<idea>"     planner: /plan-feature en la raíz del proyecto
-  run <issue>       routing.py elige el rol → prepare.sh crea worktree → implementer en tmux
+  run <issue>       routing.py elige el rol → prepare.sh crea worktree → implementer en tmux; si el kit
+                    tiene candado de worktree, bk lo suelta antes de lanzar y bk done al cerrar
                     (--role implementer|implementer-light para forzarlo; --orchestrated si lo lanza
                     /orchestrate: el orquestador lanza al reviewer y bk no lo propone)
   review <pr>       reviewer: /review-pr en la raíz del proyecto
@@ -50,12 +61,14 @@ uso: bk [comando] [--dry-run]
   go <agente>       saltar a un agente. <agente>: la ventana (i42, pr57), un número (#240) o una palabra del título
   changes           lo que los agentes dejaron sin commitear, con diff (alt+g)
   palette | k       todos los comandos con búsqueda (alt+k)
-  monitor           pantalla para el otro monitor: qué te espera, agentes, tareas, costo y desvíos en vivo (los graves suenan)
+  monitor           pantalla para el otro monitor: qué te espera, agentes, tareas, contexto (CTX), costo y desvíos en
+                    vivo (los graves suenan)
                     (c o bk monitor --clear limpian los desvíos: lo anterior no vuelve aunque relea los transcripts)
   stats             estadísticas de uso: actividad, modelos, rachas, costo (alt+u)
-  customize         estilo del workspace: tarjetas float/neon, densidad, header, tema (alt+,)
+  customize         estilo del workspace: header arriba o abajo (alt+,)
   s                 sesiones de Claude estilo Orca: abiertas (saltar) y recientes de todas las
-                    carpetas (retomar con claude --resume). En tmux: prefijo + s
+                    carpetas (retomar con claude --resume). En tmux: prefijo + s. El chat de un workspace
+                    lleva su número ("ws 3"); x cierra un agente o, con confirmación, un workspace entero
   peek [ventana] [n] ver qué hace un agente sin entrar (sin ventana: todos, últimas líneas)
   say [agente] "…"  escribirle a un agente (o a un chat por su nombre) como si estuvieras ahí; sin agente, al que te espera.
                     Si el agente está trabajando, se encola y se escribe al terminar su turno (--now: ya)
@@ -71,7 +84,7 @@ uso: bk [comando] [--dry-run]
   roles             qué provider/modelo corre cada rol en este proyecto, y su modo
   account           cuentas de Claude o Codex por sesión, con las mismas conversaciones (bk account help):
                     new <claude|codex> <nombre> · use <nombre> [--relaunch] · --account <nombre> en
-                    cualquier lanzamiento
+                    cualquier lanzamiento · login default [claude|codex] (el login de la de siempre)
   sound [on|off|test]  sonido por tipo de pedido de los agentes: terminó, pregunta, permiso, error
   song [género]     radio por género (techno, house, rock, reggaeton, cachengue), tuya o cualquier url (bk song help)
   mode <rol>        cómo lo lanza el orquestador: main (la sesión principal), bk (ventana propia) o
@@ -80,8 +93,23 @@ uso: bk [comando] [--dry-run]
                     con clic en una fila └ de la tira
   term [dir]        terminal rápida del proyecto, persistente (alt+x la muestra y la esconde)
   tokens            tokens del día y costo equivalente en API, por modelo y proyecto
+  metrics [--repo R] por PR: costo, rondas de review, desvíos y bloqueantes (--json, --refresh)
+  learn             registra los desvíos de los agentes en el vault (BARRILETE_VAULT) y propone lecciones
+  lessons           lecciones por revisar (status: proposed) en el vault
+  learn effect      ¿las reglas aceptadas bajan los hallazgos que dicen evitar? antes/después por ronda de
+                    review (agents/efecto.md); las que no bajan, para reescribir o retirar
 
 Los comandos de agentes se corren dentro de un proyecto Barrilete.
+Contexto alto (ámbar desde 200k, rojo desde 400k; BK_CTX_WARN y BK_CTX_HIGH los cambian): ▪ en la tira, en el riel y en la columna CTX de bk monitor;
+lib/context_hook.py se lo avisa al agente (install.sh pregunta si lo registra); a 400k le pide el resumen de handoff.
+Opcional: lib/tmux_guard.py, un hook que frena a un agente que iba a tirar tu servidor de tmux (install.sh pregunta).
+Cada workspace tiene un número fijo (el libre más bajo al crearse; no cambia al cerrar otros): alt+N, la tira,
+el header y bk ls lo usan. Cada agente bk queda colgado en la tira de la ventana que lo lanzó (←3, ←i7).
+Comandos propios: si bk no conoce "bk foo", corre bk-foo del PATH o ${BK_PLUGINS:-~/.config/bk/plugins}/foo,
+con BK_WS (la carpeta de bk), BK_SESSION (la sesión de tmux de los agentes), BK_STATE_DIR y DRY=1 si vino --dry-run.
+Enganches (comandos propios con nombre fijo): on-empty (bk sin ningún workspace abierto, antes de abrirlo),
+launch-env (antes de lanzar un agente: sus líneas NOMBRE=valor van al entorno del agente) y, en la paleta,
+${BK_CONFIG_DIR:-~/.config/bk}/palette.d/*.tsv (grupo, etiqueta, comando, argumento y tipo, separados con tabs).
 EOF
 }
 
@@ -186,8 +214,8 @@ cmd_account() {
       info "cuenta $name creada: ahora el login de $prov (las conversaciones son las mismas de siempre)"
       account_login "$name" ;;
     login)
-      [ -n "${1:-}" ] || die "bk account login <nombre>"
-      account_login "$1" ;;
+      [ -n "${1:-}" ] || die "bk account login <nombre> (o default [claude|codex])"
+      account_login "$1" "${2:-}" ;;
     use)
       account_use "$@" ;;
     -h|--help|help)
@@ -195,6 +223,7 @@ cmd_account() {
 uso: bk account                       las cuentas (● con sesión iniciada) y las de esta sesión
      bk account new <claude|codex> <nombre>   crear una cuenta y hacer su login
      bk account login <nombre>        volver a hacer el login de una cuenta
+     bk account login default [claude|codex]   el login de la de siempre (~/.claude, ~/.codex)
      bk account use <nombre> [--relaunch]   usarla en esta sesión: lo que lances desde acá
                                        (agentes, chats) corre con ella. --relaunch: el chat principal
                                        también, retomando la misma conversación
@@ -207,7 +236,19 @@ EOF
 }
 
 account_login() {
-  local name="$1" prov kv; prov=$(python3 "$ACCOUNTS" provider "$name")
+  local name="$1" prov kv
+  # default no tiene carpeta: es la config de siempre. Sin CLAUDE_CONFIG_DIR/CODEX_HOME, que una sesión con
+  # otra cuenta (bk account use) deja en el entorno de las shells nuevas y haría el login de esa otra.
+  if [ "$name" = default ]; then
+    case "${2:-claude}" in
+      claude) env -u CLAUDE_CONFIG_DIR -u BK_ACCOUNT_CLAUDE claude auth login ;;
+      codex)  command -v codex >/dev/null || die "Codex CLI no está instalado"
+              env -u CODEX_HOME -u BK_ACCOUNT_CODEX codex login ;;
+      *)      die "bk account login default [claude|codex]" ;;
+    esac
+    return
+  fi
+  prov=$(python3 "$ACCOUNTS" provider "$name")
   [ -n "$prov" ] || die "no existe la cuenta $name (bk account)"
   kv=$(python3 "$ACCOUNTS" env "$name")
   case "$prov" in
@@ -260,19 +301,24 @@ account_use() {
   fi
 }
 
+# pane_sid <pane>: "id-de-la-sesión-de-Claude estado" del chat de ese pane, del registro más nuevo que lo nombra
+# (el hook de estado nombra cada registro con el id de la sesión). Vacío si no hay.
+pane_sid() {
+  local f
+  while IFS= read -r f; do
+    grep -q "\"pane\": *\"$1\"" "$f" 2>/dev/null || continue
+    printf '%s %s\n' "$(basename "$f" .json)" "$(sed -nE 's/.*"state": *"([a-z]+)".*/\1/p' "$f" | head -1)"
+    return
+  done < <(ls -t "$STATE_DIR"/*.json 2>/dev/null)
+}
+
 # relaunch_chat <sesión>: el chat principal vuelve a arrancar con la cuenta de la sesión, retomando su
 # conversación. No si está trabajando o esperando una respuesta tuya.
 relaunch_chat() {
-  local s="$1" pane f sid="" st="" dir top
+  local s="$1" pane sid="" st="" dir top
   pane=$(tmux list-panes -t "$s:main" -F '#{pane_id} #{pane_title}' 2>/dev/null | awk '/✿ chat/ {print $1; exit}')
   [ -n "$pane" ] || die "no encontré el chat principal de $s"
-  # El registro más nuevo de ese pane (el hook de estado lo nombra con el id de la sesión de Claude)
-  while IFS= read -r f; do
-    grep -q "\"pane\": *\"$pane\"" "$f" 2>/dev/null || continue
-    sid=$(basename "$f" .json)
-    st=$(sed -nE 's/.*"state": *"([a-z]+)".*/\1/p' "$f" | head -1)
-    break
-  done < <(ls -t "$STATE_DIR"/*.json 2>/dev/null)
+  read -r sid st < <(pane_sid "$pane"; echo)
   case "$st" in working|waiting|background) die "el chat está trabajando o te espera: relanzalo cuando termine" ;; esac
   case "$sid" in bk-*) sid="" ;; esac
   dir=$(tmux display-message -p -t "$pane" '#{pane_current_path}')
@@ -309,6 +355,47 @@ ws_term() {
   exec env -u TMUX tmux attach -t "=$name"
 }
 
+# launcher_of: quién está lanzando, para la tira (@bk_parent de la ventana nueva). ws:<sesión> si bk corre
+# en un workspace (o en su chat de visita en la sesión de agentes), ag:<ventana> si corre en un agente bk;
+# nada fuera de tmux o de bk. La sesión y no su número: los números se reusan cuando cerrás un workspace.
+launcher_of() {
+  [ -n "${TMUX_PANE:-}" ] || return 0
+  local ses id ws win
+  IFS='|' read -r ses id ws win < <(tmux display-message -p -t "$TMUX_PANE" \
+    '#{session_name}|#{@bk_id}|#{@bk_ws}|#{window_name}' 2>/dev/null) || return 0
+  if [ -n "$ws" ]; then echo "ws:$ws"
+  elif [ "$ses" = "$SESSION" ]; then echo "ag:$win"
+  elif [ -n "$id" ]; then echo "ws:$ses"
+  fi
+}
+
+# mem_free: la memoria libre en %, o nada si no se sabe. Linux: MemAvailable / MemTotal de /proc/meminfo
+# (BK_MEMINFO lo cambia, para los tests); macOS: el "memory free percentage" de memory_pressure (el swap usado
+# no baja solo y daría falsas alarmas).
+mem_free() {
+  local mi="${BK_MEMINFO:-/proc/meminfo}"
+  if [ -r "$mi" ]; then
+    awk '/^MemTotal:/ {t = $2} /^MemAvailable:/ {a = $2} END {if (t > 0 && a != "") printf "%d", a * 100 / t}' "$mi"
+    return 0
+  fi
+  command -v memory_pressure >/dev/null || return 0
+  memory_pressure -Q 2>/dev/null | sed -nE 's/.*free percentage: ([0-9]+)%.*/\1/p'
+}
+
+# mem_ok: ¿hay memoria para otro agente? Con la memoria agotada, el sistema empieza a matar procesos y puede
+# llevarse al server de tmux con todos los chats y agentes. Sin dato (ni /proc/meminfo ni memory_pressure) no frena.
+# BK_MEM_MIN: el mínimo en % (15). BK_FORCE=1 lo saltea.
+mem_ok() {
+  [ "${BK_FORCE:-0}" = 1 ] && return 0
+  local free; free=$(mem_free)
+  [[ "$free" =~ ^[0-9]+$ ]] || return 0
+  if [ "$free" -lt "${BK_MEM_MIN:-15}" ]; then
+    printf 'bk: queda %s%% de memoria libre. Otro agente puede dejar al sistema sin memoria y tirar tmux con todo.\n' "$free" >&2
+    printf '    Cerrá algo (agentes listos con bk stop, pestañas del navegador) o forzalo con BK_FORCE=1.\n' >&2
+    return 1
+  fi
+}
+
 # launch <ventana> <dir> <rol> <ref> <comando> [tarea] [orquestado: 1 si lo lanzó un orquestador]
 # Con tarea (ADR-005): la crea (o arranca la pendiente), le pasa BK_TASK_DIR al agente y, si el proceso
 # del agente termina sin `bk done`, la cierra como incomplete.
@@ -324,16 +411,20 @@ launch() {
   [ -n "$cta" ] && printf '  cuenta: %s\n' "$cta"
   [ "$DRY" -eq 1 ] && { info "(dry-run: no se lanzó nada)"; return 0; }
 
+  mem_ok || exit 1
   need_tmux
   if has_window "$win"; then
-    # Misma ventana en otro proyecto (#12 de abra y #12 del kit): prefijar con el proyecto
+    # Misma ventana en otro proyecto (#12 de mi-proyecto y #12 de demo): prefijar con el proyecto
     local other mine
     other=$(project_of "$(tmux display-message -p -t "$SESSION:$win" '#{pane_current_path}')")
     mine=$(project_of "$dir")
     if [ "$other" != "$mine" ]; then win="${mine:0:8}-$win"; fi
     has_window "$win" && die "ya existe la ventana '$win' (bk go $win, o bk stop $win)"
   fi
-  local env=(-e "BARRILETE_ROLE=$role" -e "BARRILETE_MODEL=$model" -e "BARRILETE_PROVIDER=$provider")
+  # Las variables del comando propio launch-env van primero: las de bk (rol, cuenta, tarea) les ganan
+  local env=() kv
+  while IFS= read -r kv; do env+=(-e "$kv"); done < <(launch_env "$dir" "$role")
+  env+=(-e "BARRILETE_ROLE=$role" -e "BARRILETE_MODEL=$model" -e "BARRILETE_PROVIDER=$provider")
   [ -n "$ref" ] && env+=(-e "BARRILETE_ISSUE=$ref")
   env+=("${CTA[@]+"${CTA[@]}"}")
   if [ -n "$tid" ]; then
@@ -351,7 +442,7 @@ launch() {
     env+=(-e "BK_TASK_DIR=$tdir")
     full="$full; $(sq "$WS/bin/bk") _ended $(sq "$tdir")"
   fi
-  local pane
+  local pane parent; parent=$(launcher_of)
   if tmux has-session -t "$SESSION" 2>/dev/null; then
     pane=$(tmux new-window -d -P -F '#{pane_id}' -t "$SESSION:" -n "$win" -c "$dir" "${env[@]}" "$full")
   else
@@ -363,9 +454,14 @@ launch() {
   fi
   # La ventana queda abierta si el agente termina, para leer lo último
   tmux set-option -w -t "$SESSION:$win" remain-on-exit on >/dev/null
+  # La cuenta con la que corre, para retomarlo con la misma (bk restore de una capa propia, por ejemplo)
+  [ -z "$cta" ] || tmux set-option -w -t "$SESSION:$win" @bk_account "$cta" >/dev/null
+  # La tira lo cuelga de la ventana que lo lanzó
+  [ -z "$parent" ] || tmux set-option -w -t "$SESSION:$win" @bk_parent "$parent" >/dev/null
   pre_register "$win" "$pane" "$dir" "$role" "$model" "$ref"
-  # El título del issue/PR para bk ls y la tira (una consulta a GitHub, en segundo plano)
-  (python3 "$WS/lib/agents.py" warm >/dev/null 2>&1 &)
+  # El título del issue/PR para bk ls y la tira (una consulta a GitHub, en segundo plano). BK_NO_WARM=1: no
+  # (los tests: ni ese proceso suelto ni la red)
+  [ "${BK_NO_WARM:-0}" = 1 ] || (python3 "$WS/lib/agents.py" warm >/dev/null 2>&1 &)
   info "lanzado → bk go $win"
 }
 
@@ -437,9 +533,7 @@ cmd_approve() {
 # Pane de lo que devolvió resolve_win: un agente (su ventana) o un chat (chat:<workspace>)
 win_pane() {
   case "$1" in
-    chat:*) # el pane del chat del workspace: el de la ventana main que no es la tira ni el riel
-            tmux list-panes -t "${1#chat:}:main" -F '#{pane_id} #{pane_start_command}' 2>/dev/null \
-              | grep -v -e 'bk rail' -e 'bk sidebar' | head -1 | cut -d' ' -f1 ;;
+    chat:*) ws_chat_pane "${1#chat:}" ;;
     *)      agent_target "$1" ;;
   esac
 }
@@ -648,11 +742,18 @@ project_of() { basename "$(project_top "$1")" | tr '.:' '__'; }
 WS_SESSION="${BK_WS_SESSION:-}"
 
 workspace() {
+  # --dry-run: decir qué abriría y nada más (todo lo que abre workspaces pasa por acá: bk ws, bk chat,
+  # --rama, --desde). La carpeta puede no existir todavía (el worktree de --rama no se crea en dry-run).
+  if [ "$DRY" -eq 1 ]; then
+    info "(dry-run: abriría el workspace ${WS_SESSION:-bk-$(project_of "${1:-$PWD}" 2>/dev/null)} en ${1:-$PWD})"
+    return 0
+  fi
   need_tmux
   local dir; dir=$(cd "${1:-$PWD}" && pwd) || die "no existe $1"
   local top; top=$(project_top "$dir")
   WS_SESSION="${WS_SESSION:-bk-$(project_of "$dir")}"
-  if ! tmux has-session -t "$WS_SESSION" 2>/dev/null; then
+  # "=" nombre exacto: sin él, tmux toma prefijos y bk-demo "existía" si estaba bk-demo-2
+  if ! tmux has-session -t "=$WS_SESSION" 2>/dev/null; then
     local cols lines chat rail
     cols=$(tput cols 2>/dev/null || echo 200); lines=$(tput lines 2>/dev/null || echo 50)
     # El chat sobrevive a un /exit: vuelve a una shell en la misma carpeta
@@ -660,11 +761,14 @@ workspace() {
     # también la deja en el entorno de la sesión, como bk account use
     local CTA cx; account_args claude; cx=$(account_of codex)
     chat=$(tmux new-session -d -P -F '#{pane_id}' -s "$WS_SESSION" -n main -c "$dir" -x "$cols" -y "$lines" \
-           -e "BK_PROJECT=$top" "${CTA[@]+"${CTA[@]}"}" "claude; exec \$SHELL")
+           -e "BK_PROJECT=$top" "${CTA[@]+"${CTA[@]}"}" "${WS_CHAT_CMD:-claude}; exec \$SHELL")
     [ ${#CTA[@]} -eq 0 ] || tmux set-option -t "$WS_SESSION" @bk_account_claude "$(account_of claude)"
     [ -z "$cx" ] || { BK_FROM="$WS_SESSION" account_use "$cx" >/dev/null; }
     tmux set-environment -t "$WS_SESSION" BK_PROJECT "$top"
     [ -z "${BK_WS_NAME:-}" ] || tmux set-option -t "$WS_SESSION" @bk_name "$BK_WS_NAME"
+    # Número fijo: el que se pida con BK_WS_ID si está libre; si no, el libre más bajo (ws_ids)
+    [ -z "${BK_WS_ID:-}" ] || tmux set-option -t "=$WS_SESSION:" @bk_id "$BK_WS_ID"
+    BK_IDS_NOSTYLE=1 ws_ids >/dev/null
     rail=$(tmux split-window -d -P -F '#{pane_id}' -h -l "${RAIL_PCT}%" -t "$chat" -c "$dir" -e "BK_PROJECT=$top" "bk rail")
     # Tira izquierda: sesiones activas (workspaces y agentes), a lo Gentle Shell 4
     local side
@@ -676,9 +780,13 @@ workspace() {
     ws_style
     tmux select-pane -t "$chat"
     # La sesión nace con el tamaño de la terminal que la crea: reacomodar al conectarse/redimensionar
-    tmux set-hook -t "$WS_SESSION" client-attached "run-shell -b 'bk _layout #{session_name}'"
-    tmux set-hook -t "$WS_SESSION" client-resized "run-shell -b 'bk _layout #{session_name}'"
+    tmux set-hook -t "$WS_SESSION" client-attached "run-shell -b 'bk _layout #{q:session_name}'"
+    # (el cambio de tamaño de la ventana lo agarra el hook global window-resized de tmux/bk.conf: también al
+    # cambiar de sesión, que client-resized no ve)
+  else
+    ws_chat_pane "$WS_SESSION" >/dev/null   # si el chat se cerró, volver a entrar lo repone
   fi
+  [ -z "${WS_NOSWITCH:-}" ] || return 0   # bk chat --desde: primero pregunta si cierra el viejo
   if [ -n "${TMUX:-}" ]; then tmux switch-client ${BK_CLIENT:+-c "$BK_CLIENT"} -t "$WS_SESSION"; else exec tmux attach -t "$WS_SESSION"; fi
 }
 
@@ -724,6 +832,27 @@ cmd_rerun() {
 # bk _agent <sesión> <N|0>: muestra el agente N de la tira en el lugar del chat del workspace (swap-pane:
 # la tira y el riel quedan). 0 devuelve el orquestador. El pane del chat se marca con @bk_ws para
 # reconocerlo aunque esté de visita en la sesión agents.
+# ws_chat_pane <sesión>: el pane del chat del workspace (el de la ventana main que no es la tira ni el riel).
+# Si ya no está (se cerró y quedaron solo el riel y la tira), lo vuelve a crear a la izquierda del riel con un
+# claude nuevo en el proyecto (tira | chat | riel) y bk _layout devuelve a cada uno su ancho.
+ws_chat_pane() {
+  local s="${1:?}" w="$1:main" chat rail top
+  chat=$(tmux list-panes -t "$w" -F '#{pane_id} #{pane_start_command}' 2>/dev/null \
+         | grep -v -e 'bk rail' -e 'bk sidebar' | head -1 | cut -d' ' -f1 || true)
+  if [ -z "$chat" ]; then
+    rail=$(tmux list-panes -t "$w" -F '#{pane_id} #{pane_start_command}' 2>/dev/null \
+           | grep 'bk rail' | head -1 | cut -d' ' -f1 || true)
+    [ -n "$rail" ] || return 0
+    top=$(tmux show-environment -t "$s" BK_PROJECT 2>/dev/null | sed -n 's/^BK_PROJECT=//p' || true)
+    [ -d "$top" ] || top="$HOME"
+    chat=$(tmux split-window -d -P -F '#{pane_id}' -hb -t "$rail" -c "$top" -e "BK_PROJECT=$top" "claude; exec \$SHELL") || return 0
+    tmux set-option -p -t "$chat" allow-set-title off >/dev/null 2>&1 || true
+    tmux select-pane -t "$chat" -T "✿ chat" || true
+    "$WS/bin/bk" _layout "$s" >/dev/null 2>&1 || true
+  fi
+  echo "$chat"
+}
+
 ws_agent() {
   set +euo pipefail
   local s="${1:?}" n="${2:-0}" w guest chat target
@@ -742,8 +871,8 @@ ws_agent() {
   target=$(tmux list-panes -s -t "$SESSION" -F '#{pane_id} #{@bk_ws}' 2>/dev/null | awk '$2 == "" {print $1}' | sed -n "${n}p")
   fi
   [ -n "$target" ] || { tmux display-message "no hay agente $n"; return; }
-  chat=$(tmux list-panes -t "$w" -F '#{pane_id} #{pane_start_command}' | grep -v -e 'bk rail' -e 'bk sidebar' | head -1 | cut -d' ' -f1)
-  [ -n "$chat" ] || return
+  chat=$(ws_chat_pane "$s")
+  [ -n "$chat" ] || { tmux display-message "no encuentro el lugar del chat en $s"; return; }
   tmux set-option -p -t "$chat" @bk_ws "$s"
   tmux swap-pane -d -s "$target" -t "$chat"
   tmux set-option -w -t "$w" @bk_guest "$target"; tmux set-option -w -t "$w" @bk_chat "$chat"
@@ -781,12 +910,98 @@ cmd_name() {
   info "$ws se llama «$*» (bk say/go $*)"
 }
 
+# chat_pane <sesión>: el pane del chat principal de un workspace (por su título; sin recrearlo como ws_chat_pane)
+chat_pane() {
+  tmux list-panes -t "=$1:main" -F '#{pane_id} #{pane_title}' 2>/dev/null | awk '/✿ chat/ {print $1; exit}'
+}
+
+# ws_session <número|sesión>: la sesión de tmux del workspace con ese número (alt+N), o la misma si ya es una
+ws_session() {
+  case "$1" in
+    [0-9]*) ws_ids | awk -F'\t' -v n="$1" '$1 == n {print $2}' ;;
+    *)      printf '%s\n' "$1" ;;
+  esac
+}
+
+# bk chat --desde <ws|sesión>: seguir en un chat nuevo desde el resumen que dejó otro (lib/handoff.py). Un
+# workspace más del proyecto, en la misma carpeta y con la misma cuenta, que arranca con el resumen como primer
+# mensaje: lo pasa como argumento de claude (no con send-keys, que corta o rompe acentos y backticks) y el chat
+# nuevo lo borra al tomarlo. Después pregunta si cierra el workspace viejo; sin terminal, no lo cierra.
+# Con --dry-run imprime "sesión<TAB>carpeta<TAB>cuenta<TAB>comando del chat" y no abre nada.
+chat_from() {
+  local q="$1" row sid dir acct old
+  [ -n "$q" ] || die "bk chat --desde <número de workspace|sesión>   (los resúmenes listos: bk handoff --listos)"
+  row=$(python3 "$WS/lib/handoff.py" find "$q") \
+    || die "no hay un resumen listo de «$q» (bk handoff $q lo pide; los listos: bk handoff --listos)"
+  IFS=$'\t' read -r sid dir acct old <<<"$row"
+  [ -d "$dir" ] || die "la carpeta del resumen ya no existe: $dir"
+  local top base k=2; top=$(project_top "$dir"); base="bk-$(project_of "$top")"
+  while tmux has-session -t "=$base-$k" 2>/dev/null; do k=$((k + 1)); done
+  [ -z "${BK_ACCOUNT:-}" ] || acct="$BK_ACCOUNT"   # bk --account X chat --desde 5: manda la que pediste
+  # la cuenta del resumen manda sobre la de la sesión desde donde lo abrís ("default" = la principal)
+  WS_SESSION="$base-$k" WS_NOSWITCH=1 BK_ACCOUNT="$acct"
+  WS_CHAT_CMD="p=\$(python3 $(sq "$WS/lib/handoff.py") take $(sq "$sid")) && claude -- \"\$p\" || claude"
+  if [ "$DRY" -eq 1 ]; then printf '%s\t%s\t%s\t%s\n' "$WS_SESSION" "$dir" "$acct" "$WS_CHAT_CMD"; return; fi
+  workspace "$dir"
+  local new="$WS_SESSION" ans="" busy=""
+  info "→ $new sigue desde ${old:-$sid}, con la cuenta $acct"
+  if [ -n "$old" ] && [ "$old" != "$new" ] && tmux has-session -t "=$old" 2>/dev/null; then
+    case "$(pane_sid "$(chat_pane "$old")" | cut -d' ' -f2)" in working|background) busy=" ¡su chat está trabajando!" ;; esac
+    if printf '¿Cierro %s, el workspace viejo, con su chat, riel y tira?%s [s/N] ' "$old" "$busy" 2>/dev/null >/dev/tty; then
+      read -r ans </dev/tty 2>/dev/null || ans=""
+    fi
+  else
+    old=""
+  fi
+  [ -z "${TMUX:-}" ] || tmux switch-client ${BK_CLIENT:+-c "$BK_CLIENT"} -t "$new"
+  case "$ans" in
+    s|S|si|sí|Sí|y|Y) tmux kill-session -t "=$old" && info "cerré $old" ;;
+    *) [ -z "$old" ] || info "$old sigue abierto (alt+s y x lo cierra)" ;;
+  esac
+  [ -n "${TMUX:-}" ] || exec tmux attach -t "$new"
+}
+
+# bk handoff [ws|sesión]: le pide al chat de ese workspace (o de este) el resumen para seguir en un chat nuevo,
+# con la plantilla de lib/handoff.py. Lo mismo que el aviso rojo de context_hook.py, pero cuando quieras.
+#   desde otro lado (otra terminal, otro workspace): le escribe al chat una línea con el comando que imprime el pedido
+#   desde el mismo chat (`! bk handoff`, o el agente): imprime el pedido, que así queda en la conversación
+# bk handoff --pedido [--sid S]: el pedido completo, para el chat de este pane · bk handoff --listos: los listos
+cmd_handoff() {
+  set +euo pipefail
+  local s pane sid="" st wsid
+  case "${1:-}" in
+    --listos|-l) python3 "$WS/lib/handoff.py" list; return ;;
+    --pedido)
+      [ "${2:-}" = --sid ] && sid="${3:-}"
+      [ -n "$sid" ] || [ -z "${TMUX_PANE:-}" ] || read -r sid st < <(pane_sid "$TMUX_PANE"; echo)
+      [ -n "$sid" ] || die "no sé qué sesión de Claude es esta: bk handoff --pedido --sid <id>"
+      exec python3 "$WS/lib/handoff.py" pedido --sid "$sid" ${TMUX_PANE:+--pane "$TMUX_PANE"} ;;
+  esac
+  need_tmux
+  s=$(ws_session "${1:-$(caller_session)}")
+  case "$s" in bk*) tmux has-session -t "=$s" 2>/dev/null || die "no hay un workspace $s" ;;
+    *) die "bk handoff [número de workspace]: desde un workspace, o nombrando uno" ;; esac
+  pane=$(chat_pane "$s")
+  [ -n "$pane" ] || die "no encontré el chat de $s (si hay un agente en su lugar, alt+q lo devuelve)"
+  read -r sid st < <(pane_sid "$pane"; echo)
+  case "$sid" in ""|bk-*) die "no sé qué sesión de Claude corre en el chat de $s" ;; esac
+  if [ "$pane" = "${TMUX_PANE:-}" ]; then exec python3 "$WS/lib/handoff.py" pedido --sid "$sid" --pane "$pane"; fi
+  # Un menú abierto: el Enter elegiría la opción marcada (como en bk say)
+  [ -z "$(open_menu "$pane")" ] || die "el chat de $s tiene un menú abierto: respondelo y volvé a pedirlo"
+  tmux send-keys -t "$pane" -l -- "Pasemos a un chat nuevo: corré \`bk handoff --pedido --sid $sid\` y hacé lo que dice."
+  sleep 0.2
+  tmux send-keys -t "$pane" Enter
+  wsid=$(tmux show-options -qv -t "=$s:" @bk_id)
+  info "→ $s: le pedí el resumen. Cuando lo escriba: bk chat --desde ${wsid:-$s}"
+}
+
 cmd_chat() {
   set +euo pipefail
   local loose=0 branch="" want_branch=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --suelto) loose=1; shift ;;
+      --desde) chat_from "${2:-}"; return ;;
       --nombre) export BK_WS_NAME="${2:?--nombre necesita un nombre}"; shift 2 ;;
       --rama) want_branch=1; branch="${2:-}"; if [ $# -ge 2 ]; then shift 2; else shift; fi ;;
       *) break ;;
@@ -809,7 +1024,9 @@ cmd_chat() {
            | cut -c1-30 | sed 's/^-*//; s/-*$//')
     [ -n "$slug" ] || die "el nombre '$branch' no deja un nombre de rama válido (usá letras o números)"
     wt="$(dirname "$top")/$(basename "$top")-wt/chat-$slug"
-    if [ ! -d "$wt" ]; then
+    if [ ! -d "$wt" ] && [ "$DRY" -eq 1 ]; then
+      info "(dry-run: crearía la rama chat/$slug en $wt)"
+    elif [ ! -d "$wt" ]; then
       git -C "$top" fetch -q origin 2>/dev/null
       base=$(git -C "$top" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || echo HEAD)
       if git -C "$top" show-ref -q --verify "refs/heads/chat/$slug"; then
@@ -836,7 +1053,9 @@ cmd_chat() {
     return
   fi
   # Chat sin proyecto: en una carpeta propia (~/.bk/chats), así Claude no lee tu home ni pide confiar en ella
-  top="$HOME/.bk/chats"; mkdir -p "$top"; name="c-suelto"
+  top="$HOME/.bk/chats"; name="c-suelto"
+  [ "$DRY" -eq 1 ] && { info "(dry-run: abriría un chat sin proyecto en $top)"; return 0; }
+  mkdir -p "$top"
   n=1; while has_window "$name$([ $n -gt 1 ] && echo "-$n")"; do n=$((n + 1)); done
   [ $n -gt 1 ] && name="$name-$n"
   local CTA kv; account_args claude
@@ -848,6 +1067,7 @@ cmd_chat() {
     for kv in "${CTA[@]+"${CTA[@]}"}"; do [ "$kv" = -e ] || tmux set-environment -u -t "$SESSION" "${kv%%=*}" 2>/dev/null || true; done
   fi
   tmux set-option -w -t "$SESSION:$name" remain-on-exit on >/dev/null
+  [ ${#CTA[@]} -eq 0 ] || tmux set-option -w -t "$SESSION:$name" @bk_account "$(account_of claude)" >/dev/null
   case "$s" in bk*) ws_agent "$s" "$pane" ;; *) info "chat nuevo: $name (bk go $name)" ;; esac
 }
 
@@ -918,13 +1138,42 @@ cmd_open() {
   info "abriendo $(project_of "$dir") en una ventana nueva → $dir"
 }
 
+# Número fijo de cada workspace (@bk_id): lo toma al crearse (el libre más bajo) y lo conserva hasta que se
+# cierra, aunque se cierren otros; alt+N va a ese número, y la tira y el header lo muestran con su color.
+# A los que no tienen (de antes de esto, o repetido porque dos se crearon a la vez: gana el más viejo) les
+# da uno acá, en orden de creación, y les rehace el header. Imprime "número<TAB>sesión" por número.
+ws_ids() {
+  local rows taken=" " out="" c name id n need=()
+  rows=$(tmux list-sessions -F '#{session_created}	#{session_name}	#{@bk_id}' 2>/dev/null \
+         | awk -F'\t' '$2 ~ /^bk/' | sort -n) || true
+  while IFS=$'\t' read -r c name id; do
+    [ -n "$name" ] || continue
+    if [[ "$id" =~ ^[1-9][0-9]*$ ]] && [[ "$taken" != *" $id "* ]]; then
+      taken+="$id "; out+="$id	$name"$'\n'
+    else
+      need+=("$name")
+    fi
+  done <<<"$rows"
+  for name in "${need[@]+"${need[@]}"}"; do
+    n=1; while [[ "$taken" == *" $n "* ]]; do n=$((n + 1)); done
+    taken+="$n "; out+="$n	$name"$'\n'
+    tmux set-option -t "=$name:" @bk_id "$n" >/dev/null 2>&1 || true
+    [ -n "${BK_IDS_NOSTYLE:-}" ] || ( WS_SESSION="$name"; ws_style ) >/dev/null 2>&1 || true
+  done
+  [ -z "$out" ] || printf '%s' "$out" | sort -n
+}
+
 # Paleta gentle (rosa sobre oscuro): bordes finos, sin título en el riel, footer en la barra de tmux
 ws_style() {
-  local t="$WS_SESSION:main" s="$WS_SESSION" pal
+  local t="$WS_SESSION:main" s="$WS_SESSION" pal id idc
+  id=$(tmux show-options -qv -t "=$s:" @bk_id 2>/dev/null || true)
   # Colores del tema (day/night) y posición del header, de lib/gentle.py y ~/.config/bk/ui.json
   pal=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import gentle as g; p = g.P
-print(p["tint"], p["rose"], p["petal"], p["text"], p["muted"], p["frame"], p["iris"], g.ui()["header"])' "$WS/lib")
-  read -r TINT ROSE PETAL TEXT MUTED FRAME IRIS HEAD <<<"$pal"
+print(p["tint"], p["rose"], p["petal"], p["text"], p["muted"], p["frame"], p["iris"], g.ui()["header"], g.id_colour(sys.argv[2]) or "-")' "$WS/lib" "${id:-0}")
+  read -r TINT ROSE PETAL TEXT MUTED FRAME IRIS HEAD idc <<<"$pal"
+  # El número fijo del workspace, con su color (el mismo que en la tira), antes del nombre
+  local tag=""
+  [ -z "$id" ] || [ "$idc" = - ] || tag="#[fg=colour$idc,bold]$id "
   tmux set-option -w -t "$t" pane-border-status off >/dev/null
   tmux set-option -w -t "$t" pane-border-lines single >/dev/null
   tmux set-option -w -t "$t" pane-border-style "fg=#$TINT" >/dev/null
@@ -939,8 +1188,8 @@ print(p["tint"], p["rose"], p["petal"], p["text"], p["muted"], p["frame"], p["ir
   tmux set-option -t "$s" window-status-format '' >/dev/null
   tmux set-option -t "$s" window-status-current-format '' >/dev/null
   tmux set-option -t "$s" status-left \
-    "#[fg=#$ROSE,bold]  ✿ #{s/^bk-//:session_name} #[fg=#$MUTED,nobold]· #[fg=#$TEXT]#{s|$HOME|~|:pane_current_path} #[fg=#$PETAL,bold]#(git -C '#{pane_current_path}' branch --show-current 2>/dev/null)#[nobold] #[fg=#$MUTED]· #[fg=#$TEXT]#(bk _model #{session_name})" >/dev/null
-  tmux set-option -t "$s" status-right "#[fg=#$IRIS]#(bk _footer #{session_name})  " >/dev/null
+    "  $tag#[fg=#$ROSE,bold]✿ #{s/^bk-//:session_name} #[fg=#$MUTED,nobold]· #[fg=#$TEXT]#{s|$HOME|~|:pane_current_path} #[fg=#$PETAL,bold]#(git -C #{q:pane_current_path} branch --show-current 2>/dev/null)#[nobold] #[fg=#$MUTED]· #[fg=#$TEXT]#(bk _model #{q:session_name})" >/dev/null
+  tmux set-option -t "$s" status-right "#[fg=#$IRIS]#(bk _footer #{q:session_name})  " >/dev/null
 }
 
 # Modelo del chat del workspace (el pane "main.0"), del estado que escribe el hook
@@ -968,17 +1217,61 @@ ws_footer() {
 
 # Proporciones (lib/layout.conf): riel derecho RAIL_PCT % del ancho, mínimo RAIL_MIN columnas; tira de SIDE_W
 ws_layout() {
+  # Al cambiar el tamaño (zoom de la terminal, otra pantalla): el chat nunca queda con menos de LAYOUT_CHAT
+  # columnas; el riel se achica para dejarle lugar y, si ni así entra (menos de LAYOUT_RAIL), el chat pasa a
+  # pantalla completa con el zoom de tmux (no se cierra nada). Ese zoom lo marca @bk_autozoom y se deshace solo
+  # al volver a haber lugar; un zoom hecho a mano no se toca.
   set +euo pipefail
-  local t="${1:-$WS_SESSION}:main" W rail w side
+  local ses="${1:-$WS_SESSION}"
+  case "$ses" in bk*) ;; *) return 0 ;; esac            # el hook es global: solo los workspaces
+  # De a uno por sesión: cada paso del zoom dispara el hook, y dos a la vez podían prender y apagar el zoom
+  # del chat en el mismo momento. mkdir es atómico y adentro queda el pid del dueño: el lock es de uno que murió
+  # si ese pid ya no existe, si no tiene pid (murió entre el mkdir y anotarlo) y es de hace más de 5 s, o si
+  # pasó un minuto (un pid reusado). Uno vivo que tarda no lo pierde.
+  local lock="${TMPDIR:-/tmp}/bk-layout-${ses//[^A-Za-z0-9_.-]/_}.lock" i got=0 owner born limit
+  for i in $(seq 50); do
+    if mkdir "$lock" 2>/dev/null; then echo "$$" > "$lock/pid"; got=1; break; fi
+    owner=$(cat "$lock/pid" 2>/dev/null); born=$(mtime "$lock"); limit=5
+    [ -n "$owner" ] && limit=60
+    if { [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; } \
+       || { [ -n "$born" ] && [ $(( $(date +%s) - born )) -gt "$limit" ]; }; then
+      rm -f "$lock/pid"; rmdir "$lock" 2>/dev/null
+    fi
+    sleep 0.1
+  done
+  [ "$got" = 1 ] || return 0                           # no se pudo: el que tiene el lock ya acomoda
+  trap 'rm -f "$lock/pid"; rmdir "$lock" 2>/dev/null; trap - RETURN' RETURN
+  local t="$ses:main" W rail w side chat max zoomed auto
   W=$(tmux display-message -p -t "$t" '#{window_width}')
   [ -n "$W" ] || return 0
   rail=$(tmux list-panes -t "$t" -F '#{pane_id} #{pane_start_command}' | awk '/bk rail/{print $1; exit}')
   side=$(tmux list-panes -t "$t" -F '#{pane_id} #{pane_start_command}' | awk '/bk sidebar/{print $1; exit}')
+  chat=$(tmux list-panes -t "$t" -F '#{pane_id} #{pane_start_command}' | awk '!/bk rail|bk sidebar/{print $1; exit}')
+  zoomed=$(tmux display-message -p -t "$t" '#{window_zoomed_flag}')
+  auto=$(tmux show-options -wqv -t "$t" @bk_autozoom)
+  [ "$zoomed" = 1 ] && [ -z "$auto" ] && return 0      # zoom a mano: respetarlo
   w=$((W * RAIL_PCT / 100)); [ "$w" -lt "$RAIL_MIN" ] && w=$RAIL_MIN
+  local sw=0; [ -n "$side" ] && sw=$SIDE_W
+  max=$((W - LAYOUT_CHAT - 2 - sw))                    # 2 bordes, y la tira si está
+  [ "$w" -gt "$max" ] && w=$max
+  if [ -n "$rail" ] && [ "$w" -lt "$LAYOUT_RAIL" ]; then
+    if [ "$zoomed" != 1 ] && [ -n "$chat" ]; then
+      tmux set-option -w -t "$t" @bk_autozoom 1
+      tmux resize-pane -Z -t "$chat"
+    fi
+    return 0
+  fi
+  if [ "$zoomed" = 1 ]; then                           # zoom nuestro y ya hay lugar: deshacerlo
+    tmux set-option -wu -t "$t" @bk_autozoom
+    tmux resize-pane -Z -t "${chat:-$t}"
+  fi
   [ -n "$rail" ] && tmux resize-pane -t "$rail" -x "$w"
   [ -n "$side" ] && tmux resize-pane -t "$side" -x "$SIDE_W"
   return 0
 }
+
+# Segundos desde epoch de la última modificación (stat de GNU o de BSD); vacío si no existe
+mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
 
 stop() {
   need_tmux
@@ -1064,6 +1357,29 @@ role_mode() {
   printf '%s' "${mode:-bk}"
 }
 
+# Vault de bk learn / lessons / learn effect / metrics: BARRILETE_VAULT (BK_VAULT, el nombre viejo). Sin default.
+need_vault() {
+  local v="${BARRILETE_VAULT:-${BK_VAULT:-}}"
+  [ -n "$v" ] || die "falta el vault: exportá BARRILETE_VAULT con la carpeta de notas (markdown) donde bk learn guarda desvíos y lecciones, por ejemplo  export BARRILETE_VAULT=~/notas"
+  case "$v" in "~"/*) v="$HOME/${v#\~/}" ;; esac
+  printf '%s' "$v"
+}
+
+lessons() {
+  local vault f n=0
+  vault=$(need_vault) || exit 1
+  [ -d "$vault" ] || die "no existe el vault $vault (BARRILETE_VAULT)"
+  for f in "$vault"/agents/lessons/*.md; do
+    [ -e "$f" ] || continue
+    grep -q '^status:[[:space:]]*proposed' "$f" || continue
+    printf '  %s  (%s veces)  %s\n' "$(basename "$f" .md)" \
+      "$(sed -nE 's/^count:[[:space:]]*([0-9]+).*/\1/p' "$f")" "$(sed -nE 's/^scope:[[:space:]]*([^[:space:]]+).*/\1/p' "$f")"
+    n=$((n+1))
+  done
+  if [ "$n" -eq 0 ]; then echo "no hay lecciones por revisar"
+  else printf '\n%s por revisar en %s/agents/lessons (status: accepted + regla → INDEX.md; retired → descartar)\n' "$n" "$vault"; fi
+}
+
 roles() {
   local root; root=$(git rev-parse --show-toplevel 2>/dev/null || true)
   for r in planner orchestrator implementer implementer-light reviewer; do
@@ -1120,6 +1436,29 @@ cmd_fix() {
   launch "$win" "$wt" "$role" "#${issue:-$n}" "Retomás el PR #$n (rama $branch, ya hecha por otro implementer). Seguí el flujo de /implement-issue ${issue:-} para correcciones de un PR existente (TDD, red.sh, verify, cuerpo del PR) y no abras otro PR. Tarea: $msg" "pr$n-$role" "$orch"
 }
 
+# lock_release <repo> <worktree> <nombre>: suelta el candado del worktree (scripts/agents/worktree-lock.sh de
+# Barrilete Kit) si es de este proceso con ese nombre. Libre, vencido o un kit sin candado: nada que hacer (0).
+# Si es de otro agente vivo o el script falla: imprime lo que dijo y sale con 1.
+lock_release() {
+  local sh="$1/scripts/agents/worktree-lock.sh" out
+  [ -x "$sh" ] || return 0
+  out=$(WORKTREE_LOCK_AGENT="$3" "$sh" release "$2" 2>&1) || { printf '%s' "$out"; return 1; }
+  case "$out" in held:*) printf '%s' "$out"; return 1 ;; esac
+}
+
+# done_release: bk done cerró la tarea de este agente (BK_TASK_DIR): suelta su candado del worktree, que tomó
+# con el nombre de la tarea. Corre como hijo del claude del agente, así que el dueño es el mismo proceso.
+# Nunca hace fallar el cierre: si el candado es de otro, avisa.
+done_release() {
+  local d="${BK_TASK_DIR:-}" wt repo out
+  [ -f "$d/task.json" ] || return 0
+  wt=$(jq -r '.worktree // ""' "$d/task.json"); repo=$(jq -r '.repo // ""' "$d/task.json")
+  [ -d "$wt" ] || return 0
+  [ -x "$repo/scripts/agents/worktree-lock.sh" ] || repo=$wt
+  out=$(lock_release "$repo" "$wt" "$(basename "$d")") || printf 'bk: no solté el candado de %s: %s\n' "$wt" "$out" >&2
+  return 0
+}
+
 cmd_run() {
   local n="" role="" orch=0
   while [ $# -gt 0 ]; do
@@ -1154,12 +1493,105 @@ cmd_run() {
 
   # Mismo camino que /orchestrate: fetch una vez, prepare.sh valida, asigna y crea el worktree
   git -C "$root" fetch -q origin
-  local prep wt
-  prep=$(cd "$root" && .claude/skills/implement-issue/prepare.sh "$n" --worktree 2>&1) \
+  # prepare.sh toma el candado del worktree a nombre de la tarea y bk lo suelta antes de lanzar: el agente lo
+  # toma como su primer paso y bk done lo suelta. Sin esto el candado quedaba a nombre del proceso que llamó a
+  # bk (un chat que sigue vivo) y el agente veía su propio worktree como de otro.
+  local prep wt held
+  prep=$(cd "$root" && WORKTREE_LOCK_AGENT="$n-$role" .claude/skills/implement-issue/prepare.sh "$n" --worktree 2>&1) \
     || { printf '%s\n' "$prep" >&2; die "prepare.sh rechazó #$n (ver arriba)"; }
   wt=$(sed -nE 's/^Worktree: (.+)$/\1/p' <<<"$prep" | tail -1)
   [ -d "$wt" ] || { printf '%s\n' "$prep" >&2; die "prepare.sh no informó el worktree"; }
+  held=$(lock_release "$root" "$wt" "$n-$role") || die "no pude soltar el candado de $wt: $held"
   launch "i$n" "$wt" "$role" "#$n" "/implement-issue $n" "$n-$role" "$orch"
+}
+
+# Comandos propios, como en git: "bk foo" que bk no conoce corre bk-foo del PATH o $BK_PLUGINS/foo.
+# Solo nombres de letras, números, - y _ (nada de rutas ni opciones); los de bk siempre ganan.
+find_plugin() {
+  local name="$1" dir="${BK_PLUGINS:-$HOME/.config/bk/plugins}" p
+  [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || return 1
+  p=$(command -v "bk-$name" 2>/dev/null || true)
+  if [ -n "$p" ] && [ -x "$p" ] && [ ! -d "$p" ]; then printf '%s' "$p"; return 0; fi
+  p="$dir/$name"
+  if [ -f "$p" ] && [ -x "$p" ]; then printf '%s' "$p"; return 0; fi
+  return 1
+}
+
+# Lo que todo comando propio recibe de bk: la raíz del repo (BK_WS, para llamar a sus lib/), la sesión de tmux
+# de los agentes (BK_SESSION) y DRY=1 si vino --dry-run (si no, 0: un DRY del entorno no se cuela).
+# BK_STATE_DIR ya está exportada arriba.
+plugin_env() { export BK_WS="$WS" BK_SESSION="$SESSION" DRY; }
+
+# Enganche launch-env: antes de crear la ventana de un agente, el comando propio "launch-env" (si existe) recibe
+# BK_LAUNCH_CWD (la carpeta del agente) y BK_LAUNCH_ROLE (su rol) e imprime NOMBRE=valor, uno por línea.
+# Solo pasan las líneas con un nombre de variable válido; si el comando falla, ninguna (y el agente se lanza igual).
+launch_env() {
+  local p out
+  p=$(find_plugin launch-env) || return 0
+  out=$(plugin_env; BK_LAUNCH_CWD="$1" BK_LAUNCH_ROLE="$2" "$p" </dev/null 2>/dev/null) || return 0
+  printf '%s\n' "$out" | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' || true
+}
+
+# Enganche on-empty: "bk" o "bk ws" sin ningún workspace abierto (ninguna sesión bk-* en tmux) corre antes el
+# comando propio "on-empty" (por ejemplo, para reabrir lo que había). No cuando lo llama un restore
+# (BK_RESTORING), ni con --dry-run (solo lo dice). Su código de salida no importa. Corre con BK_RESTORING=1: si
+# llama a "bk" o "bk ws" para reabrir, esa llamada no vuelve a correr on-empty (sin eso, no terminaría nunca).
+on_empty() {
+  local p
+  [ -z "${BK_RESTORING:-}" ] || return 0
+  p=$(find_plugin on-empty) || return 0
+  if [ "$DRY" -ne 1 ]; then need_tmux; fi
+  local ses; ses=$(tmux list-sessions -F '#{session_name}' 2>/dev/null || true)
+  case $'\n'"$ses" in *$'\n'bk-*) return 0 ;; esac
+  if [ "$DRY" -eq 1 ]; then info "(dry-run: sin workspaces abiertos, correría $p)"; return 0; fi
+  (plugin_env; BK_RESTORING=1 "$p") || true
+}
+
+plugins_help() {
+  local l; l=$(list_plugins)
+  printf '\nComandos propios (bk-* del PATH y ${BK_PLUGINS:-~/.config/bk/plugins}/*; cómo escribir uno: README):\n'
+  if [ -n "$l" ]; then printf '%s\n' "$l"; else printf '  (ninguno)\n'; fi
+}
+
+# Los comandos de bk: los nombres del case principal de abajo (un comando propio con ese nombre nunca corre)
+builtin_cmds() {
+  awk '/^case "\$\{1:-\}" in/ {on=1; next} on && /^esac/ {exit}
+       on && match($0, /^  [-a-z_|"]+\)/) { s = substr($0, 3, RLENGTH - 3); gsub(/"/, "", s)
+                                         n = split(s, a, "|"); for (i = 1; i <= n; i++) if (a[i] != "") print a[i] }' \
+    "$WS/bin/bk"
+}
+
+# Lo que entra, sin caracteres de control salvo el salto de línea y el tab (UTF-8; un byte que no lo es queda
+# como U+FFFD, que se ve y la terminal no interpreta).
+printable() {
+  python3 -c 'import sys
+s = sys.stdin.buffer.read().decode("utf-8", "replace")
+sys.stdout.buffer.write("".join(c for c in s if c in "\t\n" or c.isprintable()).encode())'
+}
+
+# "Comandos propios" de bk help: los que encuentra find_plugin (bk-* del PATH y $BK_PLUGINS/*), uno por nombre,
+# sin los que tapa un comando de bk, con la primera línea "# bk <nombre>…" de sus primeras 5 como descripción.
+list_plugins() {
+  local dir="${BK_PLUGINS:-$HOME/.config/bk/plugins}" d f n p desc names=() builtins
+  builtins=$(builtin_cmds)
+  local IFS=:
+  for d in $PATH; do
+    [ -n "$d" ] || continue
+    for f in "$d"/bk-*; do [ -e "$f" ] && names+=("${f##*/bk-}"); done
+  done
+  unset IFS
+  for f in "$dir"/*; do [ -e "$f" ] && names+=("${f##*/}"); done
+  [ ${#names[@]} -gt 0 ] || return 0
+  printf '%s\n' "${names[@]}" | LC_ALL=C sort -u | while IFS= read -r n; do
+    case $'\n'"$builtins"$'\n' in *$'\n'"$n"$'\n'*) continue ;; esac
+    p=$(find_plugin "$n") || continue
+    # Sin caracteres de control (C0, DEL ni C1 como U+009B): la descripción sale del archivo de otro
+    # (hasta 64 KiB: un binario sin saltos de línea no se lee entero; si un paso se corta, queda lo que haya)
+    desc=$(head -c 65536 "$p" 2>/dev/null | head -n 5 | printable 2>/dev/null \
+           | awk -v n="$n" 'index($0, "# bk " n) == 1 { r = substr($0, length("# bk " n) + 1)
+                               if (r == "" || r ~ /^[ :]/) { sub(/^[ :]+/, "", r); print r; exit } }') || true
+    printf '  %-16s %s\n' "$n" "$desc"
+  done
 }
 
 # ---------- main ----------
@@ -1191,6 +1623,7 @@ case "${1:-}" in
   watch)       shift; watch "${1:-}" ;;
   stop)        shift; stop "${1:-}" ;;
   done)        shift; rc=0; python3 "$TASKS" done "$@" || rc=$?
+               [ "$rc" -ne 0 ] || done_release
                sketchybar --trigger agent_update >/dev/null 2>&1 || true; exit $rc ;;
   tasks)       shift; case "${1:-}" in prune) shift; exec python3 "$TASKS" prune "$@" ;;
                                      *) exec python3 "$TASKS" list "$@" ;; esac ;;
@@ -1203,7 +1636,12 @@ case "${1:-}" in
   mode)        shift; [ -n "${1:-}" ] || die "bk mode <rol>"
                role_mode "$1" "$(git rev-parse --show-toplevel 2>/dev/null || true)"; echo ;;
   tokens)      exec python3 "$WS/lib/usage.py" ;;
-  ""|ws)       shift || true; workspace "${1:-}" ;;
+  learn)       shift; need_vault >/dev/null || exit 1
+               [ "${1:-}" = effect ] && { shift; exec python3 "$WS/lib/effect.py" "$@"; }
+               exec python3 "$WS/lib/learn.py" "$@" ;;
+  lessons)     lessons ;;
+  metrics)     shift; need_vault >/dev/null || exit 1; exec python3 "$WS/lib/metrics.py" "$@" ;;
+  ""|ws)       shift || true; on_empty; workspace "${1:-}" ;;
   open)        shift; cmd_open "${1:-}" ;;
   rerun)       shift; cmd_rerun "$@" ;;
   _prs)        cmd_prs ;;
@@ -1214,13 +1652,15 @@ case "${1:-}" in
   sound)       shift; cmd_sound "${1:-status}" ;;
   name)        shift; cmd_name "$@" ;;
   song)        shift; exec "$WS/lib/song.sh" "$@" ;;
-  _nth)        tmux list-sessions -F '#{session_created} #{session_name}' 2>/dev/null \
-                 | awk '$2 ~ /^bk/' | sort -n | awk -v n="${2:-1}" 'NR == n {print $2}' ;;
+  _nth)        ws_ids | awk -F'\t' -v n="${2:-1}" '$1 == n {print $2}' ;;   # alt+N: el workspace con ese número
+  _ids)        ws_ids ;;
+  _launcher)   launcher_of ;;   # lo que launch anota como @bk_parent (la tira lo usa; tests)
   changes)     exec python3 "$WS/lib/changes.py" ;;
   palette|k)   exec python3 "$WS/lib/palette.py" ;;
   _layout)     ws_layout "${2:-}" ;;
   _agent)      ws_agent "${2:-}" "${3:-0}" ;;
   chat)        shift; cmd_chat "$@" ;;
+  handoff)     shift; cmd_handoff "$@" ;;
   new|n)       exec python3 "$WS/lib/new.py" ;;
   _footer)     ws_footer "${2:-}" ;;
   _model)      ws_model "${2:-}" ;;
@@ -1229,6 +1669,8 @@ case "${1:-}" in
   monitor)     exec python3 "$WS/lib/monitor.py" "$@" ;;
   customize)   exec python3 "$WS/lib/customize.py" ;;
   s|sessions)  exec python3 "$WS/lib/sessions.py" ;;
-  -h|--help|help) usage ;;
-  *) usage >&2; exit 2 ;;
+  -h|--help|help) usage; plugins_help ;;
+  *) plugin=$(find_plugin "$1") || { { usage; plugins_help; } >&2; exit 2; }
+     plugin_env
+     shift; exec "$plugin" "$@" ;;
 esac

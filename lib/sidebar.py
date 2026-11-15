@@ -1,10 +1,22 @@
 #!/usr/bin/env python3
 """bk sidebar: tira izquierda del workspace con las sesiones activas, a lo Gentle Shell 4.
 
-    1 ●     arriba: los workspaces (sesiones bk-*), en orden de creación; alt+1…9 salta a cada uno
-    2 ○     abajo: los agentes (ventanas de la sesión "agents")
-    ─       ● trabajando · ● rojo te espera · ○ libre/listo · · sin claude
-    └⠋      debajo de un chat o agente: sus subagentes vivos (herramienta Agent); clic = su sesión en un popup
+    1 ●     arriba: los workspaces (sesiones bk-*) por su número fijo, cada uno con su color; alt+1…9 salta
+            a ese número. El número lo toma al crearse y no cambia aunque se cierren otros (bk _ids).
+    i7 ○ ←3 abajo: los agentes bk (ventanas de la sesión "agents"), por el nombre de su ventana; ←3 = lo
+            lanzó el workspace 3 (←i7: otro agente; ←?: esa ventana ya se cerró). bk lo anota (@bk_parent).
+    ─       ⠋ trabajando · ! te espera o pide permiso · ? te pregunta · ⚠ ¿trabado? · ✓ listo · ○ libre ·
+            · sin claude (glifo y color de cada estado: gentle.STATES, la misma tabla que el riel y el monitor)
+    1 ●▪    ▪ a la derecha: la sesión ya carga mucho contexto (ámbar desde 200k, rojo desde 400k; cada
+            llamada lo vuelve a leer y a pagar). El número exacto, en el tooltip.
+    1 ○↪    ↪ a la derecha (en lugar del ▪): ese chat dejó el resumen para seguir en uno nuevo (lib/handoff.py);
+            bk chat --desde N o «Seguir desde ws N» en alt+n lo toma.
+    └⠋3.2 reviewer  debajo de un chat o agente: sus subagentes vivos (herramienta Agent), por <ventana>.<orden
+            en que los lanzó> y su tipo; la descripción y el id, en el tooltip; clic = su sesión en un popup
+    └○i7    y los agentes bk que lanzó, por su ventana; clic = ese agente
+   ╭3 ○     a la izquierda: une los workspaces del mismo proyecto (BK_PROJECT): quedan juntos, donde está
+   │5 ○     el número más bajo de cada proyecto; el número de cada uno no cambia.
+   ╰6 ●
     1 ●     el actual va resaltado. Clic en una fila para ir ahí; con el mouse encima, su nombre
             (tipo N · proyecto · feature) aparece en la barra de tmux, como un tooltip.
 """
@@ -13,8 +25,12 @@ import curses, glob, json, os, re, shlex, subprocess, sys, time
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import agents as AG  # noqa: E402  (nombre de los chats: bk name, /rename o el título de Claude)
 import gentle as G  # noqa: E402
+import usage as U   # noqa: E402  (contexto de cada sesión: context_of, los umbrales y el formato)
+import handoff as HO  # noqa: E402  (resúmenes listos para seguir en un chat nuevo)
 
-TIP_MS = 2500           # cuánto queda el nombre en la barra de tmux al pasar el mouse
+BK = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "bin", "bk")
+
+TIP_MS = 2500          # cuánto queda el nombre en la barra de tmux al pasar el mouse
 SUB_TTL = 600           # un subagente sin escribir su transcript en 10 min ya no cuenta como vivo
 
 STATE = os.environ.get("BK_STATE_DIR", os.path.expanduser("~/.cache/bk/agents"))
@@ -107,6 +123,51 @@ def subagents(sid):
     return out
 
 
+KIND = {"general-purpose": "general"}   # el tipo de subagente, corto para la tira
+_born = {}   # transcript de subagente → cuándo arrancó (no cambia: se lee una vez)
+
+
+def started(j):
+    """Cuándo arrancó un subagente: el timestamp de la 1.ª línea de su transcript (.jsonl), que no se reescribe.
+    El meta.json no sirve: Claude Code lo reemplaza por uno nuevo cuando el subagente termina.
+    Sin la 1.ª línea completa todavía (recién lanzado): "~", que ordena al final, y no se guarda."""
+    if j not in _born:
+        try:
+            with open(j) as f:
+                line = f.readline()
+        except OSError:
+            return "~"
+        if not line.endswith("\n"):
+            return "~"
+        try:
+            ts = json.loads(line).get("timestamp")
+        except (ValueError, AttributeError):
+            ts = None
+        _born[j] = ts if isinstance(ts, str) and ts else "~"
+    return _born[j]
+
+
+def sub_name(owner, j):
+    """Nombre de un subagente en la tira: <ventana>.<orden> <tipo> (3.2 reviewer = el 2.º que lanzó el ws 3).
+    El orden cuenta también los que ya terminaron y sale de cuándo arrancó cada uno, así no cambia mientras vive."""
+    d, me = os.path.dirname(j), j[:-len(".jsonl")] + ".meta.json"
+    subs = sorted(glob.glob(os.path.join(glob.escape(d), "agent-*.jsonl")), key=lambda x: (started(x), x))
+    try:
+        with open(me) as f:
+            kind = json.load(f).get("agentType") or "subagente"
+    except (OSError, ValueError, AttributeError):
+        kind = "subagente"
+    kind = clean(kind) or "subagente"
+    n = subs.index(j) + 1 if j in subs else "?"
+    return f"{clean(owner)}.{n} {KIND.get(kind, kind)}"
+
+
+def full_id(j):
+    """El id entero de un subagente (agent-<id>.jsonl → <id>), para el tooltip."""
+    b = os.path.basename(j or "")
+    return b[len("agent-"):-len(".jsonl")] if b.startswith("agent-") and b.endswith(".jsonl") else b
+
+
 _names, _branches = {}, {}
 
 
@@ -139,12 +200,24 @@ def tip(text):
 
 
 def workspaces():
-    rows = []
-    for l in sh("tmux", "list-sessions", "-F", "#{session_created}\t#{session_name}").splitlines():
-        t, _, name = l.partition("\t")
-        if name.startswith("bk"):
-            rows.append((int(t or 0), name))
-    return [n for _, n in sorted(rows)]
+    """[(número fijo, sesión)] ordenados por número, el mismo de alt+N. Si a alguno le falta o se repite,
+    `bk _ids` le da uno (y le rehace el header); eso pasa una sola vez por workspace."""
+    rows, seen, ok = [], set(), True
+    for l in sh("tmux", "list-sessions", "-F", "#{session_name}\t#{@bk_id}").splitlines():
+        name, _, i = l.partition("\t")
+        if not name.startswith("bk"):
+            continue
+        if not i.isdigit() or i in seen:
+            ok = False
+        seen.add(i)
+        rows.append((i, name))
+    if not ok:
+        try:   # rehacer headers puede tardar más que el timeout de sh()
+            out = subprocess.run([BK, "_ids"], capture_output=True, text=True, timeout=20).stdout
+        except Exception:
+            out = ""
+        rows = [tuple(l.split("\t", 1)) for l in out.splitlines() if "\t" in l]
+    return sorted((int(i), n) for i, n in rows if i.isdigit())
 
 
 def pane_state(st, pane, cmd, dead):
@@ -160,12 +233,76 @@ def pane_state(st, pane, cmd, dead):
     return state
 
 
-def items():
-    st = states()
+def link_projects(blocks):
+    """Junta los workspaces del mismo proyecto y marca la línea que los une, en la columna 0.
+    blocks: [(fila del workspace + su proyecto, [filas colgadas: subagentes y agentes bk])], en el orden de su
+    número. El proyecto es el BK_PROJECT del workspace (no la carpeta del chat, que cambia con cada cd). Cada
+    proyecto queda donde está su número más bajo; adentro, por número. Devuelve las filas con un glifo más al
+    final: ╭ el primero, │ los del medio y las filas colgadas de adentro, ╰ el último, "" solo o fuera del grupo."""
+    order, groups = [], {}
+    for b in blocks:
+        proj = b[0][7]
+        if proj not in groups:
+            order.append(proj)
+            groups[proj] = []
+        groups[proj].append(b)
     out = []
-    for name in workspaces():
+    for proj in order:
+        g = groups[proj]
+        for i, (ws, subs) in enumerate(g):
+            if len(g) == 1:
+                mark, inner = "", ""
+            else:
+                mark = "╭" if i == 0 else "╰" if i == len(g) - 1 else "│"
+                inner = "" if i == len(g) - 1 else "│"
+            out.append(ws[:7] + (mark,))
+            out += [sub + (inner,) for sub in subs]
+    return out
+
+
+READY = set()   # workspaces cuyo chat dejó un resumen listo (lo llena items())
+
+
+def ready_ws(chats, sids):
+    """De [(workspace, sid del chat)], los workspaces cuyo chat dejó un resumen listo."""
+    return {ws for ws, sid in chats if sid and sid in sids}
+
+
+def items():
+    """Las filas de la tira: (tipo, texto, destino del clic, estado, (proyecto, detalle), número o ←padre,
+    contexto, línea). Tipos: ws (workspace; en el 6.º lugar, su número fijo), ag (agente bk; en el 6.º lugar,
+    quién lo lanzó), sub (subagente de la herramienta Agent) y kid (agente bk colgado de la ventana que lo
+    lanzó: la misma ventana que su fila ag de abajo)."""
+    st = states()
+    wss = workspaces()
+    # Los agentes bk primero: cada ventana muestra debajo los que lanzó (@bk_parent, lo anota bk al lanzar)
+    agents = []
+    for l in sh("tmux", "list-panes", "-s", "-t", AGENTS, "-F",
+                "#{window_name}\t#{pane_id}\t#{pane_current_command}\t#{pane_dead}\t#{@bk_ws}\t#{pane_title}"
+                "\t#{pane_current_path}\t#{@bk_parent}").splitlines():
+        win, pid, cmd, dead, ws, title, path, parent = (l.split("\t") + [""] * 8)[:8]
+        if ws:      # el chat de un workspace, de visita mientras un agente ocupa su lugar
+            continue
+        state = pane_state(st, pid, cmd, dead)
+        ref = (st.get(pid) or {}).get("ref") or ""
+        ctx = U.context_of((st.get(pid) or {}).get("_sid")) if state != "none" else None
+        agents.append((win, pid, state, ctx, parent,
+                       (f"{project_name(path)} · {win}", " ".join(x for x in (ref, feature(title, path)) if x))))
+    ids = {name: wid for wid, name in wss}
+    wins = {a[0] for a in agents}
+
+    def by(key):
+        """Los agentes bk que lanzó esa ventana (ws:<sesión> o ag:<ventana>), como filas colgadas."""
+        return [("kid", w, f"{AGENTS}:{w}", stt, info, None, None) for w, _, stt, _, par, info in agents if par == key]
+
+    def subs_of(sid, owner):
+        return [("sub", sub_name(owner, j), "sub:" + j, "background" if bg else "working", ("", d), None, None)
+                for d, bg, j in subagents(sid)]
+
+    blocks, chat_sids = [], []
+    for wid, name in wss:
         # Estado del chat del workspace (el pane que corre claude en la ventana main)
-        state, subs, info = "none", [], None
+        state, sid, info, ctx = "none", None, None, None
         for l in sh("tmux", "list-panes", "-t", f"{name}:main", "-F",
                     "#{pane_id}\t#{pane_current_command}\t#{pane_dead}\t#{pane_start_command}\t#{pane_title}\t#{pane_current_path}").splitlines():
             pid, cmd, dead, start, title, path = (l.split("\t") + [""] * 6)[:6]
@@ -178,22 +315,38 @@ def items():
             s = pane_state(st, pid, cmd, dead)
             if s != "none":
                 state = s
-                subs = subagents((st.get(pid) or {}).get("_sid"))
-        out.append(("ws", name, name, state, info or (name[3:], "")))
-        out += [("sub", d, "sub:" + j, "background" if bg else "working", ("", d)) for d, bg, j in subs]
-    for l in sh("tmux", "list-panes", "-s", "-t", AGENTS, "-F",
-                "#{window_name}\t#{pane_id}\t#{pane_current_command}\t#{pane_dead}\t#{@bk_ws}\t#{pane_title}\t#{pane_current_path}").splitlines():
-        win, pid, cmd, dead, ws, title, path = (l.split("\t") + [""] * 7)[:7]
-        if ws:      # el chat de un workspace, de visita mientras un agente ocupa su lugar
-            continue
-        state = pane_state(st, pid, cmd, dead)
-        ref = (st.get(pid) or {}).get("ref") or ""
-        out.append(("ag", win, f"{AGENTS}:{win}", state,
-                    (f"{project_name(path)} · {win}", " ".join(x for x in (ref, feature(title, path)) if x))))
+                sid = (st.get(pid) or {}).get("_sid")
+                ctx = U.context_of(sid)
+                chat_sids.append((name, sid))
+        info = info or (name[3:], "")
+        proj = sh("tmux", "show-environment", "-t", f"={name}", "BK_PROJECT").strip().partition("=")[2] or info[0]
+        if proj != info[0]:   # el tooltip dice el proyecto del workspace, no el de la carpeta del chat (cd)
+            info = (project_name(proj), info[1])
+        blocks.append((("ws", name, name, state, info, wid, ctx, proj),
+                       (subs_of(sid, str(wid)) if sid else []) + by("ws:" + name)))
+    out = link_projects(blocks)
+    READY.clear()
+    READY.update(ready_ws(chat_sids, HO.ready_sids()))
+    for win, pid, state, ctx, parent, info in agents:
+        kind, _, who = parent.partition(":")
+        src = (str(ids[who]) if kind == "ws" and who in ids else who if kind == "ag" and who in wins
+               else "?" if parent else "")
+        out.append(("ag", win, f"{AGENTS}:{win}", state, info, src, ctx, ""))
         if state != "none":
-            out += [("sub", d, "sub:" + j, "background" if bg else "working", ("", d))
-                    for d, bg, j in subagents((st.get(pid) or {}).get("_sid"))]
+            out += [r + ("",) for r in subs_of((st.get(pid) or {}).get("_sid"), win)]
+        out += [r + ("",) for r in by("ag:" + win)]
     return out
+
+
+def row_label(r):
+    """El texto de una fila de la tira, después de su glifo: el número del workspace, el nombre del subagente
+    (sub_name) o la ventana del agente bk (en la lista de abajo, con ←quién lo lanzó). Sin caracteres de control."""
+    kind, label = r[0], clean(r[1])
+    if kind == "ws":
+        return str(r[5])
+    if kind == "ag" and r[5]:
+        return f"{label} ←{clean(r[5])}"
+    return label
 
 
 def current():
@@ -239,6 +392,33 @@ def dot_for(state, tick, attrs):
     return g, attrs[color]
 
 
+def ctx_mark(ctx, ready=False):
+    """La marca a la derecha de una fila: ↪ si su chat dejó un resumen listo ("ready"), si no el ▪ de contexto
+    alto ("warn" | "high"); None por debajo de 200k o sin dato. (glifo, clave del color)"""
+    if ready:
+        return ("↪", "ready")
+    lvl = U.ctx_level(ctx)
+    return ("▪", lvl) if lvl else None
+
+
+def row_tip(kind, num, info, ctx=None, parent="", ready=False):
+    """El tooltip de una fila de workspace o agente: tipo N · proyecto · feature · quién lo lanzó · contexto
+    · el resumen listo para seguir."""
+    proj, feat = info
+    return (f"{'workspace' if kind == 'ws' else 'agente'} {num} · {proj}" + (f" · {feat}" if feat else "")
+            + (f" · lanzado por {parent}" if parent else "")
+            + (f" · {U.human_ctx(ctx)} de contexto" if ctx else "")
+            + (f" · ↪ resumen listo: bk chat --desde {num} (o alt+n)" if ready else ""))
+
+
+def branch_tip(row):
+    """El tooltip de una fila colgada: subagente (nombre · descripción · su id entero) o agente bk que lanzó."""
+    kind, label, target, _, info = row[:5]
+    if kind == "sub":
+        return f"↳ subagente {label} · {info[1]} · agent-{full_id(target[len('sub:'):])}"
+    return f"↳ agente bk {label} · {info[0]}" + (f" · {info[1]}" if info[1] else "")
+
+
 def ui(scr):
     curses.curs_set(0)
     curses.use_default_colors()
@@ -249,8 +429,14 @@ def ui(scr):
     me = os.environ.get("TMUX_PANE", "")
     client = sh("tmux", "display-message", "-p", "-t", me, "#{client_name}").strip() if me else ""
     hover_y, hover_t, tips = -1, 0.0, {}
-    A = G.curses_attrs()   # los mismos colores que el riel, de día y de noche
+    A = G.curses_attrs(ids=True)   # los mismos colores que el riel, de día y de noche (+ ids y contexto)
     MUTED, ROSE, IRIS = (A[k] for k in ("muted", "rose", "iris"))
+    CTX = {"warn": A["warn"] | curses.A_BOLD, "high": A["high"] | curses.A_BOLD, "ready": ROSE | curses.A_BOLD}
+    n_ids = len(G.ID_NIGHT)
+
+    def id_attr(n):
+        """El color del número de un workspace: el mismo que en el header (gentle.id_colour)."""
+        return A[f"id{(n - 1) % n_ids}"] | curses.A_BOLD if n else 0
 
     def tooltip(text):
         """El nombre de la fila, como tooltip en la barra de tmux (la tira no cambia de ancho)."""
@@ -265,13 +451,18 @@ def ui(scr):
             cache, cache_t = items(), time.time()
         H, W = scr.getmaxyx()
         scr.erase()
+        if W < 4 or H < 3:   # mientras tmux reacomoda (zoom de la terminal) la tira puede quedar sin lugar
+            scr.refresh()
+            scr.getch()
+            continue
         cur = current()
         rowmap.clear()
-        y, n_ws, n_ag, sep = 1, 0, 0, False
+        y, sep = 1, False
         tips.clear()
         if hover_y >= 0 and time.time() - hover_t > TIP_MS / 1000:   # se fue el mouse: sacar el resaltado
             hover_y = -1
-        for kind, label, target, state, info in cache:
+        for row in cache:
+            kind, label, target, state, info, wid, ctx, link = row
             if kind == "ag" and not sep:
                 if y < H - 1:
                     scr.addnstr(y, 1, "─" * max(1, W - 2), W - 2, MUTED)
@@ -280,25 +471,35 @@ def ui(scr):
             if y >= H - 1:
                 break
             hl = curses.A_REVERSE if y == hover_y else 0
-            if kind == "sub":   # subagente: rama debajo de su chat, sin número; clic = su sesión
+            if link:   # la línea que une los workspaces del mismo proyecto
+                scr.addnstr(y, 0, link, 1, MUTED)
+            dot, col = dot_for(state, tick, A)
+            if kind in ("sub", "kid"):   # rama debajo de quien lo lanzó; clic = su sesión (sub) o el agente (kid)
                 scr.addnstr(y, 1, "└", 1, MUTED | hl)
-                dot, col = dot_for(state, tick, A)
-                scr.addnstr(y, 3, dot, 1, col)
-                tips[y] = f"↳ subagente · {info[1]}"
+                scr.addnstr(y, 2, dot, 1, col)
+                if W > 4:
+                    scr.addnstr(y, 3, row_label(row), W - 4, (MUTED if kind == "sub" else IRIS) | hl)
+                tips[y] = branch_tip(row)
                 rowmap[y] = target
                 y += 1
                 continue
-            if kind == "ws":
-                n_ws += 1; num = n_ws
-            else:
-                n_ag += 1; num = n_ag
-            dot, col = dot_for(state, tick, A)
             here = kind == "ws" and label == cur
-            numattr = (ROSE | curses.A_BOLD | curses.A_REVERSE) if here else (IRIS if kind == "ag" else 0)
-            scr.addnstr(y, 1, f"{num:>1}", 2, numattr | hl)
-            scr.addnstr(y, 3, dot, 1, col)
-            proj, feat = info
-            tips[y] = f"{'workspace' if kind == 'ws' else 'agente'} {num} · {proj}" + (f" · {feat}" if feat else "")
+            # el número del workspace con su color; el agente bk, por el nombre de su ventana (no un número)
+            num = wid if kind == "ws" else clean(label)
+            idc = id_attr(num) if kind == "ws" else IRIS
+            numattr = (idc | curses.A_BOLD | curses.A_REVERSE) if here else idc
+            name = f"{num}" if kind == "ws" else f"{num}"[:max(1, W - 8)]
+            scr.addnstr(y, 1, name, max(1, W - 2), numattr | hl)
+            x = 1 + max(1, len(name)) + (0 if kind == "ws" and len(name) > 1 else 1)
+            if x < W - 1:
+                scr.addnstr(y, x, dot, 1, col)
+            ready = kind == "ws" and label in READY
+            mark = ctx_mark(ctx, ready)
+            if mark and x + 1 < W - 1:
+                scr.addnstr(y, x + 1, mark[0], 1, CTX[mark[1]])
+            if kind == "ag" and wid and x + 2 < W - 1:   # ←quién lo lanzó
+                scr.addnstr(y, x + 2, f"←{clean(wid)}", W - 1 - (x + 2), MUTED)
+            tips[y] = row_tip(kind, num, info, ctx, wid if kind == "ag" else "", ready)
             rowmap[y] = target
             y += 1
         # "+" al pie: Nuevo (chat o workspace), igual que alt+n

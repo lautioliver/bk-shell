@@ -9,6 +9,7 @@ os.environ["BK_CONFIG_DIR"] = tempfile.mkdtemp()  # ni tu configuración (el son
 os.environ["BARRILETE_VAULT"] = tempfile.mkdtemp()   # ni tu vault (lecciones de bk checkpoints)
 os.environ["BK_PRS_CACHE"] = os.path.join(tempfile.mkdtemp(), "prs.json")   # ni tu caché de PRs
 os.environ["BK_CHECKPOINTS_OFFLINE"] = "1"   # bk checkpoints no consulta GitHub en los tests
+os.environ["BK_NO_WARM"] = "1"   # ni los títulos de issues y PRs (agents.title_for, pr_of_branch)
 import gentle as G          # noqa: E402
 G.UI_FILE = os.path.join(tempfile.mkdtemp(), "ui.json")   # nunca tu ~/.config/bk/ui.json (save_ui lo escribe)
 import rail                 # noqa: E402
@@ -28,11 +29,31 @@ class Gentle(unittest.TestCase):
     def test_fit_completa_con_espacios(self):
         self.assertEqual(G.vlen(G.fit("ab", 6)), 6)
 
-    def test_card_float_y_neon_tienen_el_ancho_pedido(self):
-        for style in ("float", "neon"):
-            G.ui = lambda style=style: {**G.DEFAULTS, "cards": style}
-            lines = [l for l in G.card("Título", ["fila"], 30) if l]
-            self.assertTrue(all(G.vlen(l) <= 30 for l in lines), style)
+    def test_un_solo_estilo_de_tarjeta(self):
+        # un ui.json viejo con cards/density no cambia la tarjeta, y alt+, ya no los ofrece
+        import customize
+        base = G.card("t", ["x"], 30)
+        viejo = G.ui()
+        try:
+            G.save_ui({**viejo, "cards": "float", "density": "compact"})
+            self.assertEqual(G.card("t", ["x"], 30), base)
+        finally:
+            G.save_ui(viejo)
+        self.assertTrue(STRIP.sub("", base[0]).startswith("╭"))
+        self.assertTrue(STRIP.sub("", base[-1]).startswith("╰"))
+        self.assertFalse({"cards", "density"} & {c[1] for c in customize.CATS})
+        self.assertFalse({"cards", "density"} & set(G.DEFAULTS))
+
+    def test_id_colour_un_color_por_numero_de_workspace(self):
+        # del 1 al 9 (alt+N) un color distinto cada uno; desde el 10 se repiten (el 10 como el 1)
+        for day in (False, True):
+            self.assertEqual(len({G.id_colour(n, day) for n in range(1, 10)}), 9, day)
+            self.assertEqual(G.id_colour(10, day), G.id_colour(1, day), day)
+        self.assertEqual(G.id_colour(1, False), G.ID_NIGHT[0])
+        self.assertEqual(G.id_colour(1, True), G.ID_DAY[0])
+        self.assertEqual(G.id_colour("3", False), G.ID_NIGHT[2])   # @bk_id llega como texto
+        for malo in (0, "", "x", None, -1):
+            self.assertIsNone(G.id_colour(malo, False), malo)
 
 
 class PaletaUnica(unittest.TestCase):
@@ -49,20 +70,38 @@ class PaletaUnica(unittest.TestCase):
         self.assertEqual((len(r), r[0], r[-1]), (5, G.P["tint"], G.P["rose"]))
         self.assertEqual(G.ramp(1), [G.P["tint"]])   # un solo paso no divide por cero
 
-    def test_curses_attrs_inicia_un_par_por_color_de_la_paleta(self):
+    @staticmethod
+    def _attrs(**kw):
+        """curses_attrs con un curses falso que solo anota los pares: (attrs, {par: (color, fondo)})."""
         pares = {}
         falso = types.SimpleNamespace(init_pair=lambda n, f, b: pares.__setitem__(n, (f, b)),
                                       color_pair=lambda n: n << 8)
         sys.modules["curses"], real = falso, sys.modules.get("curses")
         try:
-            a = G.curses_attrs(base=30, shades=3)
+            return G.curses_attrs(**kw), pares
         finally:
-            sys.modules["curses"] = real
+            if real is None:
+                del sys.modules["curses"]
+            else:
+                sys.modules["curses"] = real
+
+    def test_curses_attrs_inicia_un_par_por_color_de_la_paleta(self):
+        a, pares = self._attrs(base=30, shades=3)
         self.assertEqual(set(a), set(G.CURSES_NAMES) | {"shade0", "shade1", "shade2"})
         for name in G.CURSES_NAMES:
             self.assertEqual(pares[a[name] >> 8], (G.to256(G.P[name]), -1), name)
         self.assertEqual(len(set(a.values())), len(a))       # ningún par pisa a otro
         self.assertEqual(pares[a["shade2"] >> 8][0], G.to256(G.P["rose"]))
+
+    def test_curses_attrs_con_ids_suma_los_numeros_de_workspace_y_el_contexto(self):
+        a, pares = self._attrs(ids=True, shades=2)
+        ids = G.ID_DAY if G.P is G.DAY else G.ID_NIGHT
+        ctx = G.CTX_DAY if G.P is G.DAY else G.CTX_NIGHT
+        self.assertEqual([pares[a[f"id{i}"] >> 8][0] for i in range(len(ids))], ids)
+        self.assertEqual({k: pares[a[k] >> 8][0] for k in ("warn", "high")}, ctx)
+        self.assertEqual(len(set(a.values())), len(a))       # ni con ids y shades se pisan
+        self.assertEqual(len(G.ID_DAY), len(G.ID_NIGHT))     # la tira y sesiones cuentan con el mismo largo
+        self.assertNotIn("id0", self._attrs()[0])
 
     def test_ninguna_vista_define_colores_propios(self):
         lib = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib")
@@ -74,6 +113,12 @@ class PaletaUnica(unittest.TestCase):
                 if re.search(r"init_pair\(|\\033\[38;5;|\\x1b\[38;5;", l):
                     mal.append(f"{f}:{n}: {l.strip()}")
         self.assertEqual(mal, [], "colores fuera de gentle.py: usá G.curses_attrs() o G.ROSE…")
+
+    def test_las_vistas_importan_con_la_paleta(self):
+        # cada vista toma sus colores al importarse o en ui(): que al menos importe sin tocar nada
+        for m in ("agents", "agents_view", "changes", "customize", "new", "palette", "sessions",
+                  "sidebar", "stats", "subwatch"):
+            __import__(m)
 
 
 class EstadosUnicos(unittest.TestCase):
@@ -145,6 +190,42 @@ class EstadosUnicos(unittest.TestCase):
         self.assertTrue(AG.line({**ag, "state": "working", "kind": "chat"}, color=False).startswith("◇ "))
 
 
+class TiraIds(unittest.TestCase):
+    """El número fijo del workspace en bk ls y quién lanzó a cada agente en el tooltip de la tira."""
+
+    def test_bk_ls_antepone_el_numero_fijo_del_chat(self):
+        a = {"asks": False, "why": "", "state": "idle", "mins": 1, "kind": "chat", "short": "demo", "win": "",
+             "title": "t", "num": "", "ref": "", "project": "p", "queued": 0, "question": "", "note": ""}
+        self.assertIn(" 3 demo ", AG.line({**a, "id": "3"}, color=False))
+        self.assertIn(" demo ", AG.line({**a, "id": ""}, color=False))      # sin número (de antes): solo el nombre
+        largo = AG.line({**a, "short": "mi-proyecto-largo-2", "id": "12"}, color=False)
+        self.assertIn(" 12 …to-largo-2 ", largo)                                # entra en 14 y el final distingue
+        self.assertNotIn("12 ", AG.line({**a, "kind": "agent", "win": "i7", "id": "12"}, color=False))
+
+    def test_tooltip_dice_quien_lo_lanzo(self):
+        self.assertEqual(sidebar.row_tip("ag", "i7", ("demo · i7", ""), None, "3"),
+                         "agente i7 · demo · i7 · lanzado por 3")
+        self.assertEqual(sidebar.row_tip("ws", 3, ("demo", ""), None), "workspace 3 · demo")
+
+    def test_started_lee_la_primera_linea_y_la_guarda(self):
+        d = tempfile.mkdtemp()
+        j = os.path.join(d, "agent-x.jsonl")
+        with open(j, "w") as f:
+            f.write('{"timestamp": "2026-01-02T00:00:00Z"}\n')
+        self.assertEqual(sidebar.started(j), "2026-01-02T00:00:00Z")
+        os.remove(j)                                                        # no se vuelve a leer
+        self.assertEqual(sidebar.started(j), "2026-01-02T00:00:00Z")
+        self.assertEqual(sidebar.started(os.path.join(d, "no-existe.jsonl")), "~")
+        # recién lanzado: la 1.ª línea a medio escribir no se guarda, y cuando se completa se lee
+        k = os.path.join(d, "agent-k.jsonl")
+        with open(k, "w") as f:
+            f.write('{"timestamp": "2026-01-03T00:00:00Z"')
+        self.assertEqual(sidebar.started(k), "~")
+        with open(k, "a") as f:
+            f.write("}\n")
+        self.assertEqual(sidebar.started(k), "2026-01-03T00:00:00Z")
+
+
 class SongUiPaleta(unittest.TestCase):
     def _song_ui(self):
         argv, sys.argv = sys.argv, ["song_ui", "sock", "song"]   # song_ui lee argv al importarse (es un script)
@@ -169,6 +250,47 @@ class SongUiPaleta(unittest.TestCase):
         self.assertEqual(G.ramp(2, "tint", "rose", G.DAY), [G.DAY["tint"], G.DAY["rose"]])
 
 
+class SongUiEspectro(unittest.TestCase):
+    _song_ui = SongUiPaleta._song_ui
+
+    def test_bands_of_lee_las_franjas_desde_el_canal_3(self):
+        SU = self._song_ui()
+        meta = {"lavfi.astats.%d.RMS_level" % c: str(-10.0 * c) for c in range(1, 31)}
+        meta["lavfi.astats.5.RMS_level"] = "-inf"
+        bands, viejo = SU.bands_of(meta)
+        self.assertEqual(len(bands), 28)
+        self.assertEqual((bands[0], bands[1], bands[-1]), (-30.0, -40.0, None))   # -300 dB y -inf: silencio
+        self.assertIsNone(bands[2])
+        self.assertFalse(viejo)
+
+    def test_bands_of_reconoce_el_filtro_viejo(self):
+        SU = self._song_ui()
+        self.assertEqual(SU.bands_of({"lavfi.astats.1.RMS_level": "-20", "lavfi.astats.2.RMS_level": "-20"}), ([], True))
+        self.assertEqual(SU.bands_of(None), ([], False))   # mpv todavía sin datos: no es el filtro viejo
+
+    def test_spectrum_sube_al_instante_y_baja_suave(self):
+        SU = self._song_ui()
+        sp = SU.Spectrum()
+        sp.update([-10.0, -40.0, None], 0.0)
+        self.assertEqual(len(sp.vals), 3)
+        self.assertEqual(sp.vals[0], 1.0)        # la franja más fuerte llena la altura
+        self.assertEqual(sp.vals[2], 0.0)        # silencio: vacía
+        sp.update([None, None, None], 0.1)
+        self.assertAlmostEqual(sp.vals[0], 1.0 - SU.FALL * 0.1)   # baja de a poco, no de golpe
+        sp.update([-10.0, -40.0], 0.2)           # otra cantidad de franjas (otro mpv): empieza de cero
+        self.assertEqual(len(sp.vals), 2)
+
+    def test_spline_llena_el_ancho_y_pasa_por_las_franjas(self):
+        SU = self._song_ui()
+        cv = SU.spline([0.0, 1.0, 0.0], 9)
+        self.assertEqual(len(cv), 9)
+        self.assertEqual((cv[0], cv[4], cv[8]), (0.0, 1.0, 0.0))
+        self.assertTrue(all(0.0 <= v <= 1.0 for v in cv))
+        self.assertTrue(0.0 < cv[2] < 1.0)        # entre franjas, una curva: no escalones
+        SU.use_palette("dark")
+        self.assertEqual(len(SU.render_graph([0.5] * 28, 40, 4)), 4)
+
+
 class Proporciones(unittest.TestCase):
     def test_la_suite_no_toca_tu_ui_json(self):
         self.assertNotEqual(os.path.realpath(G.UI_FILE), os.path.realpath(os.path.expanduser("~/.config/bk/ui.json")))
@@ -176,30 +298,23 @@ class Proporciones(unittest.TestCase):
 
     def test_inner_es_lo_que_la_tarjeta_no_corta(self):
         # una fila de exactamente inner(W) entra entera; una más larga se corta con "…"
-        for cards in ("float", "neon"):
-            G.save_ui({**G.ui(), "cards": cards})
-            try:
-                for W in (40, 80):
-                    n = G.inner(W)
-                    self.assertEqual(n, rail.inner(W), cards)
-                    txt = lambda rows: "".join(STRIP.sub("", l) for l in G.card("t", rows, W))
-                    self.assertNotIn("…", txt(["a" * n]), (cards, W))
-                    self.assertIn("…", txt(["a" * (n + 1)]), (cards, W))
-            finally:
-                G.save_ui({**G.ui(), "cards": "float"})
+        for W in (40, 80):
+            n = G.inner(W)
+            self.assertEqual(n, rail.inner(W))
+            txt = lambda rows: "".join(STRIP.sub("", l) for l in G.card("t", rows, W))
+            self.assertNotIn("…", txt(["a" * n]), W)
+            self.assertIn("…", txt(["a" * (n + 1)]), W)
 
     def test_la_tarjeta_mide_exactamente_lo_pedido(self):
         # inner() y la tarjeta usan CARD_PAD: si el margen se corre, el ancho total deja de ser W
-        for cards in ("float", "neon"):
-            G.save_ui({**G.ui(), "cards": cards})
-            for W in (30, 80):
-                filas = [l for l in G.card("Título", ["fila", "a" * 200], W) if l]
-                self.assertEqual({G.vlen(l) for l in filas}, {W}, (cards, W))
-        G.save_ui({**G.ui(), "cards": "float"})
+        for W in (30, 80):
+            filas = G.card("Título", ["fila", "a" * 200], W)
+            self.assertEqual({G.vlen(l) for l in filas}, {W}, W)
 
     def test_layout_conf_lo_lee_gentle(self):
-        self.assertEqual((G.SIDE_W, G.RAIL_PCT, G.RAIL_MIN), (5, 34, 46))
-        self.assertEqual(set(G.layout()), {"SIDE_W", "RAIL_PCT", "RAIL_MIN"})
+        self.assertEqual((G.SIDE_W, G.RAIL_PCT, G.RAIL_MIN), (14, 34, 46))
+        self.assertEqual((G.LAYOUT["LAYOUT_CHAT"], G.LAYOUT["LAYOUT_RAIL"]), (80, 30))
+        self.assertEqual(set(G.layout()), {"SIDE_W", "RAIL_PCT", "RAIL_MIN", "LAYOUT_CHAT", "LAYOUT_RAIL"})
 
     def test_customize_descripcion_al_lado_o_debajo(self):
         import customize as CU
@@ -366,6 +481,129 @@ class Tareas(unittest.TestCase):
         self.assertEqual(AG.task_by_window(), {})
         self.assertEqual(AG.proposals(), [])
 
+
+
+class Contexto(unittest.TestCase):
+    """El contexto de cada sesión (usage.context_of) en el riel y la tira: ámbar desde 200k, rojo desde 400k."""
+
+    def setUp(self):
+        import usage as U
+        ctx = {"s-alto": 450_000, "s-medio": 250_000, "s-bajo": 50_000}
+        for mod, name in ((U, "context_of"), (rail, "usage"), (rail, "roles_profile"), (rail, "session_account")):
+            self.addCleanup(setattr, mod, name, getattr(mod, name))
+        U.context_of = lambda sid=None, path=None: ctx.get(sid)
+        rail.usage = lambda: {}
+        rail.roles_profile = lambda top: "—"
+        rail.session_account = lambda: ""
+        rail._profile["t"] = 0
+        self.cwd = tempfile.mkdtemp()
+
+    def status(self, sid):
+        return STRIP.sub("", "\n".join(rail.card_status(70, self.cwd, [], sid)))
+
+    def test_riel_contexto_de_este_chat(self):
+        self.assertIn("Contexto 250k · /clear o chat nuevo (alt+n)", self.status("s-medio"))
+        self.assertIn("Contexto 50k", self.status("s-bajo"))
+        self.assertNotIn("/clear", self.status("s-bajo"))        # por debajo de 200k: sin sugerencia
+        self.assertNotIn("Contexto", self.status(None))           # sin chat: sin fila
+        self.assertNotIn("Contexto", self.status("s-sin-dato"))
+
+    def test_riel_contexto_por_agente_en_color(self):
+        live = [{"win": "i7", "pane": "%1", "s": {"state": "working", "tool": "-", "ts": 9e9, "_sid": "s-alto"}},
+                {"win": "i8", "pane": "%2", "s": {"state": "working", "tool": "-", "ts": 9e9, "_sid": "s-bajo"}}]
+        rows = rail.card_agents(70, live, [])
+        i7 = next(r for r in rows if "i7" in r)
+        self.assertIn("450k", STRIP.sub("", i7))
+        self.assertIn(G.RED + "450k", i7)
+        self.assertIn(G.MUTED + "50k", next(r for r in rows if "i8" in r))
+        self.assertEqual(rail.ctx_text(None), "")
+        self.assertIn(G.AMBER + "250k", rail.ctx_text(250_000))
+
+    def test_tira_marca_contexto_alto(self):
+        self.assertIsNone(sidebar.ctx_mark(None))
+        self.assertIsNone(sidebar.ctx_mark(199_999))
+        self.assertEqual(sidebar.ctx_mark(200_000), ("▪", "warn"))
+        self.assertEqual(sidebar.ctx_mark(400_000), ("▪", "high"))
+        self.assertEqual(sidebar.row_tip("ws", 2, ("demo", "login"), 412_000),
+                         "workspace 2 · demo · login · 412k de contexto")
+        self.assertEqual(sidebar.row_tip("ag", 1, ("demo · i7", ""), None), "agente 1 · demo · i7")
+
+
+class CuentaRiel(unittest.TestCase):
+    """La fila Cuenta del riel: siempre, también con la cuenta default, con el mail logueado (mails de prueba)."""
+
+    def setUp(self):
+        self._real_bg = rail._bg
+        for name in ("sh", "usage", "roles_profile", "_bg"):
+            self.addCleanup(setattr, rail, name, getattr(rail, name))
+        self.addCleanup(rail._who.update, dict(rail._who))
+        rail._bg = lambda fn: fn()   # la lista en el momento; test_no_espera_la_lista prueba el hilo de verdad
+        rail._who.update(v={}, busy=False)
+        self.addCleanup(rail._account.update, dict(rail._account))
+        rail.usage = lambda: {}
+        rail.roles_profile = lambda top: "—"
+        rail._profile["t"] = 0
+        self.listing = [{"name": "default", "provider": "claude", "logged_in": True, "who": "demo@example.com"},
+                        {"name": "trabajo", "provider": "claude", "logged_in": True, "who": "otra@example.com"},
+                        {"name": "nueva", "provider": "claude", "logged_in": False, "who": ""},
+                        {"name": "trabajo", "provider": "codex", "logged_in": True, "who": "codex@example.com"}]
+        self.opts = {}
+
+        def fake_sh(*a, **k):
+            if a[0] == "tmux":
+                return self.opts.get(a[-1], "")
+            if a[-2:] == ("list", "--json"):
+                return json.dumps(self.listing)
+            return ""
+        rail.sh = fake_sh
+
+    def account(self, claude="", codex=""):
+        self.opts = {"@bk_account_claude": claude, "@bk_account_codex": codex}
+        rail._account["t"] = rail._who["t"] = 0
+        return STRIP.sub("", rail.session_account())
+
+    def test_default_muestra_su_mail(self):
+        self.assertEqual(self.account(""), "demo@example.com")
+        self.assertEqual(self.account("default"), "demo@example.com")
+
+    def test_otra_cuenta_su_mail_y_sin_login_el_nombre(self):
+        self.assertEqual(self.account("trabajo"), "otra@example.com")
+        self.assertEqual(self.account("nueva"), "nueva")          # sin login: el nombre de la carpeta
+        self.assertEqual(self.account("trabajo", "trabajo"), "otra@example.com · codex trabajo")
+        self.assertEqual(self.account("", "default"), "demo@example.com")   # codex default: no se muestra
+
+    def test_sin_lista_de_cuentas_el_nombre(self):
+        rail.sh = lambda *a, **k: "{roto" if a[0] != "tmux" else ""
+        self.assertEqual(self.account(""), "default")
+
+    def test_no_espera_la_lista(self):
+        """accounts.py list tarda segundos: el riel no se congela, muestra el nombre y el mail cuando llega."""
+        rail._bg = self._real_bg
+        slow, calls = rail.sh, []
+
+        def lento(*a, **k):
+            if a[0] != "tmux":
+                calls.append(a)
+                time.sleep(1)
+            return slow(*a, **k)
+        rail.sh = lento
+        t0 = time.time()
+        self.assertEqual(self.account("trabajo"), "trabajo")
+        self.assertLess(time.time() - t0, 0.5)
+        self.account("trabajo")   # mientras tanto no lanza otra consulta
+        for _ in range(40):
+            if not rail._who["busy"]:
+                break
+            time.sleep(0.1)
+        rail._account["t"] = 0
+        self.assertEqual(STRIP.sub("", rail.session_account()), "otra@example.com")
+        self.assertEqual(len(calls), 1)
+
+    def test_fila_cuenta_siempre_en_status(self):
+        self.opts = {}
+        rail._account["t"] = rail._who["t"] = 0
+        status = STRIP.sub("", "\n".join(rail.card_status(70, tempfile.mkdtemp(), [], None)))
+        self.assertIn("Cuenta  demo@example.com", status)
 
 
 if __name__ == "__main__":

@@ -9,6 +9,8 @@ mkdir -p "$TMP/bin"
 cat > "$TMP/bin/tmux" <<SH
 #!/usr/bin/env bash
 echo "\$*" >> "$TMP/tmux.log"
+# el número fijo del workspace (@bk_id), si el test lo pide con FAKE_ID
+case "\$1" in show-options) [ -z "\${FAKE_ID:-}" ] || echo "\$FAKE_ID" ;; esac
 SH
 chmod +x "$TMP/bin/tmux"
 
@@ -28,6 +30,13 @@ estilo day
 check_eq "$(val popup-border-style | grep -o 'fg=#[0-9A-Fa-f]*')" "fg=#8E4F75" "de día, el borde de los popups es el rosa de día"
 check_eq "$(val status-right | grep -o 'fg=#[0-9A-Fa-f]*')" "fg=#5A5596" "de día, el pie va en el iris de día"
 check_eq "$(val status-style | grep -o 'bg=#[0-9A-Fa-f]*')" "bg=#EEEBF2" "de día, el fondo del header es el tinte de día"
+
+# El número fijo del workspace va en el header, antes del nombre, con su color (gentle.id_colour: el de la tira)
+check_eq "$(val status-left | grep -c 'colour')" "0" "sin número fijo: el header no muestra ninguno"
+FAKE_ID=3 estilo night
+check_eq "$(val status-left | grep -o '#\[fg=colour[0-9]*,bold\]3 ')" "#[fg=colour150,bold]3 " "con @bk_id 3: el 3 en el header, con el color de noche del 3"
+FAKE_ID=3 estilo day
+check_eq "$(val status-left | grep -o '#\[fg=colour[0-9]*,bold\]3 ')" "#[fg=colour28,bold]3 " "de día, el 3 con el color de día del 3"
 
 # El pie ya no trae un color propio: lo pone ws_style
 FOOT=$(HOME="$TMP/home-day" PATH="$TMP/bin:$PATH" BK_STATE_DIR="$TMP/state" bash "$ROOT/bin/bk" _footer bk-t 2>/dev/null)

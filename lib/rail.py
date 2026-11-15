@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """bk rail: riel derecho del workspace, a lo gentle-shell (Status → Agents → Changes → radio; los checkpoints están en bk monitor y bk checkpoints).
 
-Solo lectura; se redibuja cada 2 s. El detalle está en los overlays: alt+a agentes, alt+g cambios,
+Solo lectura; se redibuja cada 1 s y, con el pane oculto, no dibuja. El detalle está en los overlays: alt+a agentes, alt+g cambios,
 alt+k comandos, alt+s sesiones.
 """
-import glob, json, os, subprocess, sys, time
+import glob, json, os, subprocess, sys, threading, time
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import gentle as G
 import agents as AG   # título del issue/PR y "¿te pregunta algo?" (lo mismo que bk ls)
+import usage as U     # contexto de cada sesión (context_of) y sus umbrales: ámbar 200k, rojo 400k
 from gentle import (AMBER, BOLD, FRAME, GREEN, IRIS, MUTED, PETAL, RED, ROSE, RST, TEXT,
                     card, cut, fit, lr, vlen)
 
@@ -29,9 +30,9 @@ def in_project(path):
     return p == PROJECT or p.startswith(PROJECT + "/") or p.startswith(PROJECT + "-wt/")
 
 
-def sh(*a, cwd=None):
+def sh(*a, cwd=None, timeout=4):
     try:
-        return subprocess.run(a, capture_output=True, text=True, timeout=4, cwd=cwd).stdout
+        return subprocess.run(a, capture_output=True, text=True, timeout=timeout, cwd=cwd).stdout
     except Exception:
         return ""
 
@@ -119,18 +120,51 @@ def roles_profile(top):
 
 _profile = {"t": 0, "v": "—"}
 _account = {"t": 0, "v": ""}
+_who = {"t": 0, "v": {}, "busy": False}
+
+
+def _bg(fn):
+    """Corre fn en un hilo aparte (los tests lo cambian por una llamada directa)."""
+    threading.Thread(target=fn, daemon=True).start()
+
+
+def _fetch_who():
+    """accounts.py list --json corre claude/codex auth status por cada cuenta, uno tras otro: segundos. Por eso va
+    en segundo plano y con más margen que los 4 s de sh(); el riel solo lee lo que deja en _who."""
+    v = {}
+    try:
+        got = json.loads(sh(sys.executable, os.path.join(HERE, "accounts.py"), "list", "--json", timeout=60) or "[]")
+        v = {a["name"]: a.get("who") or "" for a in got
+             if isinstance(a, dict) and a.get("provider") == "claude" and a.get("logged_in")}
+    except Exception:
+        v = {}
+    finally:
+        _who.update(v=v, t=time.time(), busy=False)   # aunque falle: no queda trabado en "busy"
+
+
+def account_who(name):
+    """El mail con el que está logueada una cuenta de claude, o "" si todavía no se sabe o no tiene login.
+    Nunca espera: cada 5 min pide la lista en segundo plano (_fetch_who) y mientras tanto devuelve la última."""
+    if time.time() - _who["t"] > 300 and not _who["busy"]:
+        _who["busy"] = True
+        _bg(_fetch_who)
+    return _who["v"].get(name, "")
 
 
 def session_account():
-    """La cuenta de esta sesión (bk account use): "" si es la default en los dos proveedores."""
+    """La cuenta de claude de esta sesión (bk account use), siempre, también la default: su mail
+    ("alguien@ejemplo.com"), o el nombre de la cuenta si no tiene login. Codex, solo si no es la default."""
     if time.time() - _account["t"] > 5:
         pane = os.environ.get("TMUX_PANE", "")
         got = []
         for prov in ("claude", "codex"):
             v = sh("tmux", "show-options", "-qv", *(["-t", pane] if pane else []), f"@bk_account_{prov}").strip()
-            if v and v != "default":
-                got.append(v if prov == "claude" else f"codex {v}")
-        _account["v"], _account["t"] = " · ".join(got), time.time()
+            if prov == "claude":
+                v = v or "default"
+                got.append(account_who(v) or v)   # el mail dice cuál es; sin login, el nombre de la carpeta
+            elif v and v != "default":
+                got.append(f"codex {v}")
+        _account["v"], _account["t"] = f" {MUTED}·{RST}{ROSE} ".join(got), time.time()
     return _account["v"]
 
 
@@ -139,7 +173,15 @@ def wait_kind(s):
     return s.get("wait") or ("question" if s.get("tool") == "AskUserQuestion" else "permission")
 
 
-def card_status(W, cwd, live):
+def ctx_text(tokens):
+    """412k en ámbar o rojo según los umbrales de usage.py; apagado por debajo; vacío sin dato."""
+    if not tokens:
+        return ""
+    col = {"high": RED, "warn": AMBER}.get(U.ctx_level(tokens), MUTED)
+    return f"{col}{U.human_ctx(tokens)}{RST}"
+
+
+def card_status(W, cwd, live, here_sid=None):
     top = sh("git", "-C", cwd, "rev-parse", "--show-toplevel").strip()
     path = (PROJECT or top or cwd).replace(os.path.expanduser("~"), "~")
     br = sh("git", "-C", cwd, "branch", "--show-current").strip()
@@ -151,9 +193,12 @@ def card_status(W, cwd, live):
     rows = [f"{MUTED}Project{RST}", f" {TEXT}{path}{RST}",
             f" {MUTED}Branch{RST}  {TEXT}{BOLD}{br or '—'}{RST}" + (f" {AMBER}±{dirty}{RST}" if dirty else ""),
             f" {MUTED}Profile{RST} {TEXT}{_profile['v']}{RST}"]
-    acct = session_account()
-    if acct:
-        rows.append(f" {MUTED}Cuenta{RST}  {ROSE}{acct}{RST}")
+    rows.append(f" {MUTED}Cuenta{RST}  {ROSE}{session_account()}{RST}")   # siempre: también la default
+    # El contexto de este chat: cada llamada lo vuelve a leer y a pagar. Desde 200k, sugerir cortar.
+    here_ctx = U.context_of(here_sid) if here_sid else None
+    if here_ctx:
+        hint = f" {MUTED}· /clear o chat nuevo (alt+n){RST}" if U.ctx_level(here_ctx) else ""
+        rows.append(f" {MUTED}Contexto{RST} {ctx_text(here_ctx)}{hint}")
     rows.append("")
     if PROJECT:
         name = os.path.basename(PROJECT)
@@ -179,7 +224,7 @@ _memo = {}
 
 
 def memo(key, ttl, fn):
-    """Lo caro (git, gh, usage) se recalcula cada `ttl` s; el spinner se dibuja 4 veces por segundo."""
+    """Lo caro (git, gh, usage) se recalcula cada `ttl` s; el frame se arma una vez por segundo."""
     v = _memo.get(key)
     if v and time.time() - v[0] < ttl:
         return v[1]
@@ -251,7 +296,9 @@ def card_agents(W, live, ended, here_sid=None):
         elif s.get("state") == "background":
             g = HALF[(TICK[0] // 2) % len(HALF)]
         left = f"{col}{g}{RST} {TEXT}{BOLD}{a['win']}{RST} {MUTED}{s.get('role') or ''}{RST}"
-        right = f"{PETAL}{model(s.get('model'))}{RST}  {col}{txt}{RST}  {MUTED}{ago(s.get('ts', 0)):>5}{RST}"
+        cx = ctx_text(U.context_of(s.get("_sid")))
+        right = (f"{PETAL}{model(s.get('model'))}{RST}  " + (f"{cx}  " if cx else "")
+                 + f"{col}{txt}{RST}  {MUTED}{ago(s.get('ts', 0)):>5}{RST}")
         rows.append(lr(left, right, inner_w))
         # qué es: "#218 (PR #240) Agregar las reglas…" (de la cache de bk ls; acá no se consulta GitHub)
         m = AG.WIN_RE.match(a["win"])
@@ -430,8 +477,8 @@ def frame(W, H, cwd):
     by_pane, all_ = states()
     live, ended = agents(by_pane)
     out = []
-    out += memo(("status", W), 2, lambda: card_status(W, cwd, live))
     here_sid = memo(("chat_sid",), 2, lambda: chat_sid(by_pane))
+    out += memo(("status", W), 2, lambda: card_status(W, cwd, live, here_sid))
     out += card_agents(W, live, ended, here_sid)
     radio = memo(("radio", W), 5, lambda: line_radio(W))
     room = H - len(out) - len(radio) - 2
@@ -459,9 +506,41 @@ def frame(W, H, cwd):
     return out[:H]
 
 
+TICK_S = 1.0    # visible: redibuja cada 1 s (antes 0.25 s: 4 veces por segundo en cada workspace)
+HIDDEN_S = 3.0  # oculto: ni arma el frame; mira cada 3 s si volvió a estar a la vista
+
+
+def visible():
+    """¿El pane del riel está a la vista? Su sesión tiene un cliente y su ventana es la activa.
+
+    Fuera de tmux, o si tmux no contesta, cuenta como visible: mejor dibujar de más que congelar el riel.
+    """
+    pane = os.environ.get("TMUX_PANE")
+    if not pane:
+        return True
+    out = sh("tmux", "display-message", "-p", "-t", pane, "#{session_attached} #{window_active}").split()
+    if len(out) != 2:
+        return True
+    return out[0] != "0" and out[1] == "1"
+
+
+def step(last, cwd, W, H):
+    """Un paso del riel: (texto a escribir o None, el último escrito, segundos a esperar).
+
+    Oculto no arma el frame (ahí está lo caro: estados, git, gh). Visible escribe solo si el frame cambió.
+    """
+    if not visible():
+        return None, last, HIDDEN_S
+    lines = (frame(W, H, cwd) + [""] * H)[:H]
+    text = "\033[H" + "\033[K\n".join(cut(l, W) for l in lines) + "\033[K"
+    TICK[0] += 1
+    return (None if text == last else text), text, TICK_S
+
+
 def main():
     cwd = os.getcwd()
     sys.stdout.write("\033[?25l\033[2J")
+    last, size = None, None
     try:
         while True:
             try:
@@ -469,11 +548,13 @@ def main():
                 W, H = sz.columns, sz.lines
             except OSError:
                 W, H = 50, 40
-            lines = (frame(W, H, cwd) + [""] * H)[:H]
-            sys.stdout.write("\033[H" + "\033[K\n".join(cut(l, W) for l in lines) + "\033[K")
-            sys.stdout.flush()
-            TICK[0] += 1
-            time.sleep(0.25)
+            if (W, H) != size:      # cambió el tamaño: redibujar todo aunque el frame sea igual
+                last, size = None, (W, H)
+            text, last, wait = step(last, cwd, W, H)
+            if text:
+                sys.stdout.write(text)
+                sys.stdout.flush()
+            time.sleep(wait)
     except KeyboardInterrupt:
         pass
     finally:

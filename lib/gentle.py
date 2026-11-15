@@ -1,11 +1,7 @@
 """Estilo compartido de las vistas de bk, a lo Gentle Shell 4.
 
-Dos estilos de tarjeta (bk customize → Cards), guardados en ~/.config/bk/ui.json:
-  float (default)  panel sin borde sobre un fondo apenas distinto, con barra de acento ▎
-                    ▎ ✿ Status                          1 agente
-                    ▎ Project   ~/barrilete-kit
-  neon              marco redondeado con título, como Gentle Shell 3
-Densidad: comfortable (filas en blanco arriba/abajo del título) o compact.
+Un solo estilo de tarjeta: marco redondeado con título (neon, como Gentle Shell 3).
+Header y tema se eligen con bk customize (alt+,) y se guardan en ~/.config/bk/ui.json.
 Los colores siguen al tema de Ghostty que maneja `bk theme` (day = lavanda claro, night = violeta oscuro).
 """
 import json, os, re, subprocess, unicodedata
@@ -13,24 +9,26 @@ import json, os, re, subprocess, unicodedata
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 UI_FILE = os.path.expanduser("~/.config/bk/ui.json")
 GHOSTTY = os.path.expanduser("~/Library/Application Support/com.mitchellh.ghostty/config.ghostty")
-DEFAULTS = {"cards": "float", "density": "comfortable", "rail": "right", "header": "top"}
+DEFAULTS = {"rail": "right", "header": "top"}
 LAYOUT_FILE = os.path.join(os.path.dirname(os.path.realpath(__file__)), "layout.conf")
 
 
 def layout():
-    """Las proporciones de lib/layout.conf (NOMBRE=número; bin/bk lo carga con `source`): SIDE_W, RAIL_PCT, RAIL_MIN."""
+    """Las proporciones de lib/layout.conf (NOMBRE=número; bin/bk lo carga con `source`): SIDE_W, RAIL_PCT, RAIL_MIN,
+    LAYOUT_CHAT y LAYOUT_RAIL."""
     out = {}
-    for l in open(LAYOUT_FILE, encoding="utf-8"):
-        m = re.match(r"([A-Z_]+)=(\d+)", l)
-        if m:
-            out[m.group(1)] = int(m.group(2))
+    with open(LAYOUT_FILE, encoding="utf-8") as f:
+        for l in f:
+            m = re.match(r"([A-Z_]+)=(\d+)", l)
+            if m:
+                out[m.group(1)] = int(m.group(2))
     return out
 
 
 LAYOUT = layout()
 SIDE_W, RAIL_PCT, RAIL_MIN = LAYOUT["SIDE_W"], LAYOUT["RAIL_PCT"], LAYOUT["RAIL_MIN"]
-# Margen horizontal de una tarjeta: float = margen + ▎ + espacio … espacio + margen; neon = ╭│ … │╮ con un espacio a cada lado
-CARD_PAD = {"float": 5, "neon": 4}
+# Margen horizontal de una tarjeta: │ y un espacio a cada lado
+CARD_PAD = 4
 
 
 def ui():
@@ -74,10 +72,18 @@ NIGHT = {"rose": "F095C8", "petal": "D7A0B8", "iris": "A99CF5", "amber": "E6B450
 DAY = {"rose": "8E4F75", "petal": "7A6070", "iris": "5A5596", "amber": "76601E", "green": "3D6A4C",
        "red": "9C3F58", "text": "2E2A36", "muted": "6F6880", "frame": "BDB4CC", "tint": "EEEBF2"}
 P = DAY if is_day() else NIGHT
+# Color fijo de cada número de workspace (@bk_id), en xterm-256: lo usan la tira (curses) y el header
+# (tmux "colourN"). De noche pasteles; de día más oscuros, que se lean sobre el fondo claro.
+# Nueve: del 1 al 9 (los de alt+N) todos distintos; desde el 10 se repiten (el 10 como el 1).
+ID_NIGHT = [210, 222, 150, 117, 183, 218, 116, 216, 105]
+ID_DAY = [160, 130, 28, 25, 91, 162, 30, 94, 62]
+
+
+def id_colour(n, day=None):
+    pal = ID_DAY if (is_day() if day is None else day) else ID_NIGHT
+    return pal[(int(n) - 1) % len(pal)] if str(n).isdigit() and int(n) > 0 else None
 ROSE, PETAL, IRIS, AMBER = fg(P["rose"]), fg(P["petal"]), fg(P["iris"]), fg(P["amber"])
 GREEN, RED, TEXT, MUTED, FRAME = fg(P["green"]), fg(P["red"]), fg(P["text"]), fg(P["muted"]), fg(P["frame"])
-TINT = bg(P["tint"])
-
 
 _LEVELS = (0, 95, 135, 175, 215, 255)
 
@@ -112,11 +118,17 @@ def ramp(n, lo="tint", hi="rose", pal=None):
 CURSES_NAMES = ("rose", "petal", "iris", "amber", "green", "red", "text", "muted")
 
 
-def curses_attrs(base=20, shades=0):
+# Contexto alto de una sesión (▪ en la tira), en xterm-256: ámbar y rojo más fuertes que los de la paleta
+CTX_NIGHT = {"warn": 214, "high": 203}
+CTX_DAY = {"warn": 136, "high": 160}
+
+
+def curses_attrs(base=20, shades=0, ids=False):
     """Inicia pares de curses con la paleta del tema y devuelve {nombre: atributo}.
 
     Las vistas curses piden los colores acá en vez de tener sus números 256: así siguen el tema
     día/noche igual que el riel. Con `shades`, suma "shade0".."shadeN" (tint → rose, para mapas de calor).
+    Con `ids`, suma "id0".."id8" (el color de cada número de workspace) y "warn"/"high" (contexto alto).
     """
     import curses
     out, n = {}, base
@@ -124,11 +136,19 @@ def curses_attrs(base=20, shades=0):
         curses.init_pair(n, to256(P[name]), -1)
         out[name] = curses.color_pair(n)
         n += 1
+    if ids:
+        day = P is DAY
+        extra = [(f"id{i}", c) for i, c in enumerate(ID_DAY if day else ID_NIGHT)]
+        for name, c in extra + list((CTX_DAY if day else CTX_NIGHT).items()):
+            curses.init_pair(n, c, -1)
+            out[name] = curses.color_pair(n)
+            n += 1
     for i, h in enumerate(ramp(shades)):
         curses.init_pair(n, to256(h), -1)
         out[f"shade{i}"] = curses.color_pair(n)
         n += 1
     return out
+
 
 
 # Estados de un agente o chat: una sola tabla para la tira, el riel, el monitor y los overlays.
@@ -203,28 +223,11 @@ def lr(left, right, width):
     return left + " " * gap + right
 
 
-def _float(title, rows, width, accent, glyph, right, compact):
-    """Panel float: margen de 1, fondo tintado, barra ▎ del color del tono, aire arriba y abajo."""
-    inner = width - CARD_PAD["float"]
-    def paint(content):
-        # El fondo se re-aplica después de cada RST interno para que el panel quede parejo
-        body = fit(content, inner).replace(RST, RST + TINT)
-        return f" {TINT}{accent}▎{RST}{TINT} {body} {RST} "
-    head = f"{accent}{glyph} {BOLD}{title}{RST}"
-    tr = f"{MUTED}{right}{RST}" if right else ""
-    out = [] if compact else [paint("")]
-    out.append(paint(lr(head, tr, inner)))
-    if not compact:
-        out.append(paint(""))
-    out += [paint(r) for r in rows]
-    if not compact:
-        out.append(paint(""))
-    out.append("")
-    return out
-
-
-def _neon(title, rows, width, color, accent, glyph, right):
-    inner = width - CARD_PAD["neon"]
+def card(title, rows, width, color=None, accent=None, glyph="✿", right=""):
+    """Tarjeta con marco redondeado. `color` es el marco; `accent`, el glifo y el título."""
+    color = color or FRAME
+    accent = accent or ROSE
+    inner = width - CARD_PAD
     head = f"{accent}{glyph} {BOLD}{title}{RST}"
     tr = f" {MUTED}{right}{RST} " if right else ""
     fill = width - 4 - vlen(head) - vlen(tr) - 1
@@ -235,19 +238,9 @@ def _neon(title, rows, width, color, accent, glyph, right):
     return out
 
 
-def card(title, rows, width, color=None, accent=None, glyph="✿", right=""):
-    """Tarjeta en el estilo elegido. `color` es el tono (marco en neon, barra en float)."""
-    conf = ui()
-    accent = accent or ROSE
-    tone = color if color and color != FRAME else accent
-    if conf["cards"] == "neon":
-        return _neon(title, rows, width, color or FRAME, accent, glyph, right)
-    return _float(title, rows, width, tone, glyph, right, conf["density"] == "compact")
-
-
 def inner(width):
-    """Columnas de texto que caben en una tarjeta de `width` (según el estilo elegido): lo que `card` no corta."""
-    return width - CARD_PAD["float" if ui()["cards"] == "float" else "neon"]
+    """Columnas de texto que caben en una tarjeta de `width`: lo que `card` no corta."""
+    return width - CARD_PAD
 
 
 def hint(keys, width):

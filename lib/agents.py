@@ -11,7 +11,7 @@
 
 Los chats de los workspaces (bk-kit-2…) también se nombran: por su nombre (bk name / bk chat --nombre),
 por el de /rename o por el título que les puso Claude. resolve los devuelve como chat:<sesión>.
-  agents.py warm                 busca los títulos que falten (bk lo corre al lanzar un agente)
+  agents.py warm                 busca los títulos que falten (bk lo corre al lanzar un agente; BK_NO_WARM=1: no)
 
 resolve/auto/pick imprimen la ventana en stdout. Si no pueden decidir salen con 3 (varios) o 4 (ninguno)
 y explican en stderr; con una terminal, resolve y auto abren el selector en vez de fallar.
@@ -28,10 +28,10 @@ import tasks as TK   # tareas de los agentes (ADR-005 del kit): estado final, pr
 import gentle as G   # paleta del tema, la misma que el riel
 
 SESSION = os.environ.get("BK_SESSION", "agents")
-STATE_DIR = os.environ.get("BK_STATE_DIR", os.path.expanduser("~/.cache/sketchybar/agents"))
+STATE_DIR = os.environ.get("BK_STATE_DIR", os.path.expanduser("~/.cache/bk/agents"))
 PROJECTS = os.environ.get("BK_PROJECTS") or os.path.expanduser("~/.claude/projects")
 TITLES = os.path.join(os.environ.get("BK_CACHE_DIR", os.path.expanduser("~/.cache/bk")), "titles.json")
-WIN_RE = re.compile(r"^(?:[\w.-]+-)?(i|pr|f)(\d+)$")   # i218, pr241, f240, abra-i12
+WIN_RE = re.compile(r"^(?:[\w.-]+-)?(i|pr|f)(\d+)$")   # i218, pr241, f240, demo-i12
 
 R, DIM, BOLD = "\033[0m", "\033[2m", "\033[1m"
 ROSE, AMBER, GREEN, IRIS = G.ROSE, G.AMBER, G.GREEN, G.IRIS
@@ -74,7 +74,7 @@ def pr_of_branch(cwd, titles, fetch=True):
     key = f"{repo}@{branch}"
     if titles.get(key):
         return titles[key]
-    if not fetch:
+    if not fetch or offline():
         return ""
     env = {k: v for k, v in os.environ.items() if k not in ("GH_CONFIG_DIR", "GH_TOKEN")}
     try:
@@ -86,6 +86,11 @@ def pr_of_branch(cwd, titles, fetch=True):
         titles[key] = n
         save_titles(titles)
     return n
+
+
+def offline():
+    """BK_NO_WARM=1: no consultar GitHub (los tests; también quien no quiera que bk salga a la red)."""
+    return os.environ.get("BK_NO_WARM") == "1"
 
 
 def save_titles(titles):
@@ -105,7 +110,7 @@ def title_for(cwd, num, titles, fetch=True):
         return ""
     if key in titles:
         return titles[key]
-    if not fetch:
+    if not fetch or offline():
         return ""
     env = {k: v for k, v in os.environ.items() if k not in ("GH_CONFIG_DIR", "GH_TOKEN")}
     try:   # el endpoint de issues sirve también para PRs
@@ -203,13 +208,14 @@ def subagents(sid):
 
 
 def chats(sts):
-    """Los chats de los workspaces (bk-<proyecto>, bk-<proyecto>-2…): {sesión: (pane, nombre)}."""
+    """Los chats de los workspaces (bk-<proyecto>, bk-<proyecto>-2…): {sesión: (pane, nombre, número fijo)}."""
     out = {}
     raw = sh("tmux", "list-sessions", "-F", "#{session_name}")
     for ws in raw.split():
         if not ws.startswith("bk"):
             continue
         name = sh("tmux", "show-options", "-qv", "-t", ws, "@bk_name").strip()
+        wid = sh("tmux", "show-options", "-qv", "-t", f"={ws}:", "@bk_id").strip()   # el de la tira y alt+N
         pane = ""
         for l in sh("tmux", "list-panes", "-t", f"{ws}:main", "-F", "#{pane_id}\t#{pane_start_command}\t#{pane_title}").splitlines():
             pid, start, title = (l.split("\t") + ["", ""])[:3]
@@ -224,7 +230,7 @@ def chats(sts):
                 if w == ws:
                     pane = pid
         if pane:
-            out[ws] = (pane, name)
+            out[ws] = (pane, name, wid)
     return out
 
 
@@ -355,7 +361,7 @@ def gather(fetch_titles=True, look=True, chats_too=True):
     for a in out:
         a["subs"] = subagents(sts.get(a["pane"], {}).get("_sid"))
     if chats_too:
-        for ws, (pane, name) in chats(sts).items():
+        for ws, (pane, name, wid) in chats(sts).items():
             st = sts.get(pane, {})
             state = st.get("state", "")
             why = ""
@@ -364,7 +370,7 @@ def gather(fetch_titles=True, look=True, chats_too=True):
             title = name or session_title(st.get("_sid"))
             out.append({
                 "win": "chat:" + ws, "pane": pane, "kind": "chat", "num": "", "ref": "", "pr": "",
-                "title": title, "ws": ws, "short": ws[3:] if ws.startswith("bk-") else ws,
+                "title": title, "ws": ws, "short": ws[3:] if ws.startswith("bk-") else ws, "id": wid,
                 "role": "chat", "model": "", "state": state, "asks": bool(why), "why": why, "question": "",
                 "mins": int((now - st.get("ts", now)) // 60) if st else 0,
                 "project": project_label(st.get("cwd") or ""), "subs": subagents(st.get("_sid")),
@@ -409,7 +415,12 @@ def line(a, i=None, color=True):
         status += f" · {a['queued']} en cola"
     num = f"{i:>2}  " if i is not None else ""
     name = a["short"] if a["kind"] == "chat" else a["win"]
-    if len(name) > 14:   # el final distingue: barrilete-workspace-2 → …workspace-2
+    if a["kind"] == "chat":   # el número fijo del workspace (el de la tira y alt+N), antes del nombre
+        tag = f"{a['id']} " if str(a.get("id") or "").isdigit() else ""
+        if len(tag + name) > 14:   # el final distingue: 3 mi-proyecto-largo-2 → 3 …cto-largo-2
+            name = "…" + name[-max(1, 13 - len(tag)):]
+        name = tag + name
+    elif len(name) > 14:   # el final distingue
         name = "…" + name[-13:]
     if a["kind"] == "chat" and not a["asks"]:
         mark = "◇"

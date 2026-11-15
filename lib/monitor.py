@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """bk monitor: pantalla para dejar abierta en otro monitor y vigilar a todos los agentes.
 
-  Agentes   los de bk y los chats: título, estado, herramienta, minutos, costo de la sesión y sus subagentes
+  Agentes   los de bk y los chats: título, estado, herramienta, minutos, contexto (ámbar desde 200k, rojo desde
+            400k), costo de la sesión y sus subagentes
   Desvíos   en vivo, apenas pasan: los que detecta `bk learn` (hooks, barandas, red.sh/verify.py, correcciones,
             interrupciones, permisos rechazados, bloqueantes del contrato) y otros propios del monitor:
             agente trabado, el mismo error repetido, force push, otra credencial, "CI en verde" con el CI rojo,
@@ -43,14 +44,17 @@ except Exception:       # sin vault configurado, el monitor sigue con sus detect
     L = None
 try:
     from usage import cost as usage_cost
+    from usage import context_tokens, ctx_level, human_ctx
 except Exception:
-    usage_cost = None
+    usage_cost = context_tokens = None
+    ctx_level = lambda t: ""          # noqa: E731
+    human_ctx = lambda t: ""          # noqa: E731
 
 CACHE = os.environ.get("BK_CACHE_DIR", os.path.expanduser("~/.cache/bk"))
 LOG = os.path.join(CACHE, "monitor-events.jsonl")
 CLEARED = os.path.join(CACHE, "monitor-cleared")   # hasta cuándo limpiaste los desvíos (c o bk monitor --clear)
 SOUND_OFF = os.path.join(os.environ.get("BK_CONFIG_DIR", os.path.expanduser("~/.config/bk")), "sound")
-VAULT_DATA = os.path.join(os.path.expanduser(os.environ.get("BARRILETE_VAULT", "~/Documents/Obsidian Vault")), "agents", "data")
+VAULT_DATA = os.path.join(L.vault(), "agents", "data") if L and L.vault() else ""   # BARRILETE_VAULT; sin vault, no anota
 TO_VAULT = {"loop", "stale_grave", "ci_claim"}   # los que bk learn no puede ver en los transcripts: el monitor los anota
 STALE_WARN, STALE_GRAVE = 600, 1200      # segundos "trabajando" sin eventos del hook
 GRAVE_SOUND, GRAVE_VOLUME = "Hero", "2.5"   # largo y llamativo; afplay acepta más de 1 (el sonido del sistema es bajo)
@@ -144,6 +148,7 @@ class Tail:
         self.off, self.cost, self.model, self.tool = 0, 0.0, "", ""   # cost: solo lo de hoy
         self.tools, self.plan, self.errors = {}, {}, []
         self.first = True    # la primera lectura solo suma costo: no reporta desvíos viejos
+        self.ctx = None      # contexto del último turno (usage.context_tokens): lo que se relee en cada llamada
 
     def read(self, mon):
         try:
@@ -176,6 +181,8 @@ class Tail:
         if t == "assistant":
             self.model = msg.get("model") or self.model
             u = msg.get("usage") or {}
+            if context_tokens and u and self.model != "<synthetic>" and not e.get("isSidechain"):
+                self.ctx = context_tokens(u)
             if usage_cost and u and self.model and self.model != "<synthetic>":
                 c = usage_cost(self.model, {"in": u.get("input_tokens", 0), "out": u.get("output_tokens", 0),
                                             "cw5": (u.get("cache_creation") or {}).get("ephemeral_5m_input_tokens",
@@ -273,7 +280,7 @@ class Monitor:
         except OSError:
             pass
         self.events.sort(key=lambda x: x["ts"])
-        if typ in TO_VAULT and not self.quiet and os.path.isdir(VAULT_DATA) and not os.environ.get("BK_MONITOR_DRY"):
+        if typ in TO_VAULT and not self.quiet and VAULT_DATA and os.path.isdir(VAULT_DATA) and not os.environ.get("BK_MONITOR_DRY"):
             day = time.strftime("%Y-%m-%d", time.localtime(e["ts"]))
             row = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(e["ts"])), "project": who,
                    "session": "monitor", "model": "-", "role": "-", "type": typ,
@@ -328,6 +335,7 @@ class Monitor:
             main = self.tails.get(files[0]) if files else None
             a["_cost"] = sum(self.tails[f].cost for f in files + subs if f in self.tails)
             a["_tool"] = main.tool if main else ""
+            a["_ctx"] = main.ctx if main else None
             self.when, self.quiet = 0, False
             # trabado: "trabajando" sin eventos del hook hace rato
             idle = now() - st.get("ts", now())
@@ -354,6 +362,8 @@ class Monitor:
 def week_average():
     """Desvíos por día de los 7 días anteriores, según los eventos de bk learn en el vault."""
     counts = {}
+    if not VAULT_DATA:
+        return 0
     for f in glob.glob(os.path.join(VAULT_DATA, "events-*.jsonl")):
         try:
             for l in open(f):
@@ -427,6 +437,13 @@ def task_cell(t, queued=0):
     return cell + (f" {PETAL}✉{queued}{RST}" if queued else "")
 
 
+def ctx_cell(a):
+    """El contexto de la sesión, 6 columnas, en ámbar o rojo desde los umbrales de usage.py."""
+    t = a.get("_ctx")
+    col = {"high": RED, "warn": AMBER}.get(ctx_level(t), MUTED)
+    return f"{col}{human_ctx(t):>5}{RST} "
+
+
 def header_row(cols, W):
     """Fila de encabezados: [(texto, ancho), …] en gris."""
     return f"{MUTED}" + "".join(G.fit(t, w) for t, w in cols)[:W] + RST
@@ -436,11 +453,11 @@ def agent_row(a, W, selected, task, queued):
     g, col, st = state_of(a)
     tool = a.get("_tool") if a["state"] == "working" and not a.get("note") and a.get("_tool") else ""
     who = f"{(a['role'] or '-')[:17]}" + (f" · {a['model'][:8]}" if a.get("model") else "")
-    what = max(12, W - (2 + 15 + 22 + 26 + 6 + 16 + 9))
+    what = max(12, W - (2 + 15 + 22 + 26 + 6 + 16 + 6 + 9))
     line = (f"{col}{g}{RST} {TEXT}{BOLD}{G.fit(name_of(a), 14)}{RST} {MUTED}{G.fit(who, 21)}{RST} "
             f"{G.fit(AG.label(a, what - 1), what)}"
             f"{col}{G.fit(G.cut(st + (f' · {tool}' if tool else ''), 25), 26)}{RST}"
-            f"{MUTED}{ago(a['mins']):>4}{RST}  {G.fit(task_cell(task, queued), 16)}{PETAL}{money(a.get('_cost', 0)):>9}{RST}")
+            f"{MUTED}{ago(a['mins']):>4}{RST}  {G.fit(task_cell(task, queued), 16)}{ctx_cell(a)}{PETAL}{money(a.get('_cost', 0)):>9}{RST}")
     line = G.cut(line, W)
     if selected:
         line = "\033[7m" + G.ANSI.sub("", line) + RST
@@ -453,10 +470,10 @@ def agent_row(a, W, selected, task, queued):
 def chat_row(a, W, selected):
     g, col, st = state_of(a)
     tool = a.get("_tool") if a["state"] == "working" and a.get("_tool") else ""
-    what = max(12, W - (2 + 23 + 26 + 6 + 10))
+    what = max(12, W - (2 + 23 + 26 + 6 + 6 + 10))
     line = (f"{col}{g}{RST} {TEXT}{BOLD}{G.fit(name_of(a), 22)}{RST} {G.fit(G.cut(a.get('title') or '(sin nombre)', what - 1), what)}"
             f"{col}{G.fit(G.cut(st + (f' · {tool}' if tool else ''), 25), 26)}{RST}{MUTED}{ago(a['mins']):>4}{RST}  "
-            f"{PETAL}{money(a.get('_cost', 0)):>9}{RST}")
+            f"{ctx_cell(a)}{PETAL}{money(a.get('_cost', 0)):>9}{RST}")
     line = G.cut(line, W)
     if selected:
         line = "\033[7m" + G.ANSI.sub("", line) + RST
@@ -472,14 +489,14 @@ def agent_rows(mon, W, sel):
     tks = mon.tasks_by_win
     ags = [(i, a) for i, a in enumerate(mon.agents) if a["kind"] != "chat"]
     chats = [(i, a) for i, a in enumerate(mon.agents) if a["kind"] == "chat"]
-    what = max(12, W - (2 + 15 + 22 + 26 + 6 + 16 + 9))
+    what = max(12, W - (2 + 15 + 22 + 26 + 6 + 16 + 6 + 9))
     arows = [header_row([("  AGENTE", 17), ("ROL · MODELO", 22), ("QUÉ", what), ("ESTADO", 26), ("HACE", 6),
-                         ("TAREA", 16), ("COSTO HOY", 9)], W)] if ags else []
+                         ("TAREA", 16), ("CTX", 6), ("COSTO HOY", 9)], W)] if ags else []
     for i, a in ags:
         t = tks.get(a["win"])
         arows += agent_row(a, W, i == sel, t, AG.queued(t) if t else 0)
-    cwhat = max(12, W - (2 + 23 + 26 + 6 + 10))
-    crows = [header_row([("  CHAT", 25), ("DE QUÉ", cwhat), ("ESTADO", 26), ("HACE", 6), ("COSTO HOY", 9)], W)] if chats else []
+    cwhat = max(12, W - (2 + 23 + 26 + 6 + 6 + 10))
+    crows = [header_row([("  CHAT", 25), ("DE QUÉ", cwhat), ("ESTADO", 26), ("HACE", 6), ("CTX", 6), ("COSTO HOY", 9)], W)] if chats else []
     for i, a in chats:
         crows += chat_row(a, W, i == sel)
     return arows or [f"{MUTED}ningún agente de bk ahora (bk run, bk review, bk fix){RST}"], crows

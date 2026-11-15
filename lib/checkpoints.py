@@ -31,15 +31,15 @@ import tasks as TK    # noqa: E402
 PRS = os.environ.get("BK_PRS_CACHE") or os.path.expanduser("~/.cache/bk/checkpoints_prs.json")
 PRS_TTL = 120
 STALE_DAYS = int(os.environ.get("BK_CHECKPOINTS_STALE_DAYS") or 14)   # un PR sin movimiento hace más: "viejo"
-LESSONS = os.path.join(os.path.expanduser(os.environ.get("BARRILETE_VAULT", "~/Documents/Obsidian Vault")),
-                       "agents", "lessons")
+_VAULT = os.environ.get("BARRILETE_VAULT") or os.environ.get("BK_VAULT")   # sin vault: no hay lecciones que mostrar
+LESSONS = os.path.join(os.path.expanduser(_VAULT), "agents", "lessons") if _VAULT else ""
 
 # qué es y qué hacés, para cada tipo
 KINDS = {
     "plan": ("plan por aprobar", "contestá en su chat"),
     "merge": ("PR listo para mergear", "gh pr merge {number} --squash --repo {repo}"),
     "review": ("te pidieron una review", "bk review {number}"),
-    "lesson": ("lección propuesta", "aceptala o descartala en el vault: agents/lessons/"),
+    "lesson": ("lección propuesta", "bk lessons: aceptala o descartala en el vault (agents/lessons/)"),
     "reviewer": ("reviewer propuesto", "bk approve {id}"),
 }
 
@@ -116,6 +116,8 @@ def prs(project=None):
 
 def lessons():
     out = []
+    if not LESSONS:
+        return out
     for f in sorted(glob.glob(os.path.join(LESSONS, "*.md"))):
         try:
             with open(f, encoding="utf-8") as fh:

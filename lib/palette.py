@@ -2,6 +2,7 @@
 """bk palette (alt+k): todos los comandos de bk agrupados y con búsqueda, a lo gentle-shell.
 
 Escribí para filtrar · ↑↓ elegir · enter correr (pide el argumento si hace falta) · esc salir.
+Después de las fijas, las de ${BK_CONFIG_DIR:-~/.config/bk}/palette.d/*.tsv (extra_entries).
 Los que muestran texto (tokens, roles…) dejan la salida en pantalla hasta una tecla; las vistas
 (cambios, sesiones, radio) reemplazan a la paleta.
 """
@@ -37,6 +38,9 @@ ENTRIES = [
     ("Sesión", "Cuentas de Claude y Codex", "account", None, "show"),
     ("Sesión", "Usar otra cuenta en esta sesión", "account use", "cuenta", "show"),
     ("Sesión", "Usar otra cuenta y relanzar el chat", "account use --relaunch", "cuenta", "show"),
+    ("Sesión", "Pedir el resumen para seguir en un chat nuevo", "handoff", "número de workspace", "show"),
+    ("Sesión", "Resúmenes listos para seguir", "handoff --listos", None, "show"),
+    ("Sesión", "Seguir en un chat nuevo desde un resumen", "chat --desde", "número de workspace", "view"),
     ("Música", "Radio (pantalla)", "song ui", None, "view"),
     ("Música", "Pausa / seguir", "song pause", None, "show"),
     ("Música", "Siguiente estación", "song next", None, "show"),
@@ -49,6 +53,46 @@ ENTRIES = [
     ("Música", "Últimos temas", "song hist", None, "show"),
     ("Música", "Cortar la música", "song stop", None, "show"),
 ]
+KINDS = ("run", "show", "view")
+
+
+def extra_entries(conf=None):
+    """Las entradas propias: ${BK_CONFIG_DIR:-~/.config/bk}/palette.d/*.tsv, en orden alfabético.
+
+    Una por línea: grupo<TAB>etiqueta<TAB>comando<TAB>argumento-o-vacío<TAB>tipo (run | show | view). Las
+    líneas vacías, las que empiezan con # y las mal formadas no cuentan (también las que llevan un carácter de
+    control, como NUL o ESC, que curses no dibuja o la terminal interpreta); un archivo que no se puede leer, tampoco.
+    """
+    conf = conf or os.environ.get("BK_CONFIG_DIR") or os.path.expanduser("~/.config/bk")
+    d = os.path.join(conf, "palette.d")
+    try:
+        names = sorted(n for n in os.listdir(d) if n.endswith(".tsv"))
+    except OSError:
+        return []
+    out = []
+    for n in names:
+        try:
+            with open(os.path.join(d, n), encoding="utf-8", errors="replace") as f:
+                lines = f.read().splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            if not line.strip() or line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) != 5:
+                continue
+            group, label, cmd, arg, kind = (x.strip() for x in parts)
+            if not (group and label and cmd.split()) or kind not in KINDS:
+                continue
+            if not all(f.isprintable() for f in (group, label, cmd, arg)):
+                continue
+            out.append((group, label, cmd, arg or None, kind))
+    return out
+
+
+def all_entries():
+    return ENTRIES + extra_entries()
 
 
 def ui(scr):
@@ -57,6 +101,7 @@ def ui(scr):
     A = G.curses_attrs()
     ROSE, PETAL, MUTED, IRIS = A["rose"], A["petal"], A["muted"], A["iris"]
     q, sel, ask, arg, chosen = "", 0, False, "", None
+    entries = all_entries()
     while True:
         H, W = scr.getmaxyx()
         scr.erase()
@@ -69,7 +114,7 @@ def ui(scr):
             scr.move(3, min(W - 2, 4 + len(arg)))
         else:
             ql = q.lower()
-            match = [e for e in ENTRIES if ql in f"{e[0]} {e[1]} {e[2]}".lower()]
+            match = [e for e in entries if ql in f"{e[0]} {e[1]} {e[2]}".lower()]
             sel = max(0, min(sel, len(match) - 1))
             scr.addnstr(1, 2, "› " + q, W - 3, curses.A_BOLD)
             row, group = 3, None
