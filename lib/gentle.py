@@ -250,11 +250,6 @@ def inner(width):
     return width - CARD_PAD["float" if ui()["cards"] == "float" else "neon"]
 
 
-def section(label, value, width, label_w=9):
-    """Fila "Project   ~/barrilete-kit" del panel Status."""
-    return fit(f"{MUTED}{label:<{label_w}}{RST}{TEXT}{value}{RST}", width)
-
-
 def hint(keys, width):
     """Fila de atajos: `j/k select   enter abrir …` con la tecla resaltada."""
     parts = [f"{PETAL}{k}{RST} {MUTED}{v}{RST}" for k, v in keys]
