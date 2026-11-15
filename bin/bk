@@ -853,12 +853,20 @@ cmd_chat() {
 
 
 # bk _prs: PRs tuyos listos para mergear y reviews que te pidieron, para bk checkpoints (lib/checkpoints.py)
-# (la escribe en ~/.cache/bk/checkpoints_prs.json; checkpoints.py la pide cada ~2 min en segundo plano)
+# (la escribe en ~/.cache/bk/checkpoints_prs.json, o en BK_PRS_CACHE, la misma variable que lee checkpoints.py,
+# que la pide cada ~2 min en segundo plano). Sin gh, sin red o con una respuesta rota, la caché queda como estaba.
 cmd_prs() {
   set +euo pipefail
   command -v gh >/dev/null || return 0
-  local CACHE="$HOME/.cache/bk/checkpoints_prs.json" lock="${TMPDIR:-/tmp}/bk_prs.lock"
-  mkdir -p "$(dirname "$CACHE")"; mkdir "$lock" 2>/dev/null || return 0
+  local CACHE="${BK_PRS_CACHE:-$HOME/.cache/bk/checkpoints_prs.json}" lock
+  lock="$CACHE.lock"; mkdir -p "$(dirname "$CACHE")"
+  # Un solo fetch a la vez, con un candado junto a su caché. Uno de más de 10 min es de una corrida que murió
+  # sin soltarlo: se pisa (si no, los PRs no se actualizarían nunca más). Con find -mmin y no con stat, que
+  # pide un formato distinto en macOS y en Linux
+  if ! mkdir "$lock" 2>/dev/null; then
+    [ -n "$(find "$lock" -maxdepth 0 -mmin +10 2>/dev/null)" ] || return 0
+    rmdir "$lock" 2>/dev/null; mkdir "$lock" 2>/dev/null || return 0
+  fi
   gh api graphql -f query='
     { mine: search(query: "is:pr is:open author:@me archived:false draft:false", type: ISSUE, first: 30) {
         nodes { ... on PullRequest {
